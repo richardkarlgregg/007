@@ -41,7 +41,7 @@ function parseFloatNumber(input: string): number {
 
 function parseU32Arrays(source: string): Map<string, Uint8Array> {
   const arrays = new Map<string, Uint8Array>();
-  const regex = /u32\s+([A-Za-z0-9_]+)\[\]\s*=\s*\{([\s\S]*?)\n\};/g;
+  const regex = /u32\s+([A-Za-z0-9_]+)\[\]\s*=\s*\{([\s\S]*?)\n[ \t]*\};/g;
   let match: RegExpExecArray | null = null;
 
   while ((match = regex.exec(source)) !== null) {
@@ -241,8 +241,30 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
       continue;
     }
 
-    // Most room DLs terminate explicitly.
-    if (command === 0xdf) {
+    // Command 0xBF is G_TRI1 in GE's F3DEX microcode.
+    // Indices are stored in w1 as (v*10) per byte: bits [23:16], [15:8], [7:0].
+    if (command === 0xbf) {
+      const i0 = ((word1 >>> 16) & 0xff) / 10;
+      const i1 = ((word1 >>> 8) & 0xff) / 10;
+      const i2 = (word1 & 0xff) / 10;
+      if (i0 !== i1 || i1 !== i2) {
+        const a = cache[i0];
+        const b = cache[i1];
+        const c = cache[i2];
+        if (a && b && c) {
+          triangles.push({
+            roomIndex: room.roomIndex,
+            a: { x: a.x + room.center.x, y: a.y + room.center.y, z: a.z + room.center.z },
+            b: { x: b.x + room.center.x, y: b.y + room.center.y, z: b.z + room.center.z },
+            c: { x: c.x + room.center.x, y: c.y + room.center.y, z: c.z + room.center.z }
+          });
+        }
+      }
+      continue;
+    }
+
+    // 0xB8 is G_ENDDL in GE's F3DEX microcode.
+    if (command === 0xb8) {
       break;
     }
   }
@@ -260,7 +282,7 @@ function decodeRoomTriangles(room: RoomDataRef, arrays: Map<string, Uint8Array>)
     }
   }
 
-  if (room.secArrayName) {
+  if (room.secArrayName && room.secArrayName !== room.priArrayName) {
     const secCompressed = arrays.get(room.secArrayName);
     if (secCompressed) {
       triangles.push(...decodeRoomTrianglesFromMapping(room, secCompressed, arrays));
