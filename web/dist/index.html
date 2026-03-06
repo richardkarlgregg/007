@@ -31,6 +31,36 @@
         pointer-events: none;
       }
 
+      /* Fly-mode entry overlay */
+      #fly-overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 28px;
+        pointer-events: none;
+      }
+      #fly-overlay-msg {
+        background: rgba(0, 0, 0, 0.6);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 6px;
+        padding: 8px 18px;
+        font-size: 13px;
+        color: #c8d8ff;
+        letter-spacing: 0.03em;
+      }
+      #fly-overlay-msg kbd {
+        background: rgba(255,255,255,0.15);
+        border-radius: 3px;
+        padding: 1px 5px;
+        font-family: inherit;
+        font-size: 12px;
+      }
+      #fly-hint {
+        color: #ffcc66;
+      }
+
       /* Atlas viewer overlay */
       #atlas-overlay {
         display: none;
@@ -98,23 +128,71 @@
         top: 14px;
         right: 14px;
         z-index: 120;
-        width: 320px;
+        width: 340px;
         max-height: calc(100vh - 28px);
-        overflow: auto;
-        padding: 12px;
+        overflow: hidden;
+        display: none;
+        flex-direction: column;
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.2);
-        background: rgba(8, 11, 18, 0.92);
+        background: rgba(8, 11, 18, 0.95);
         color: #e6edff;
         font-size: 12px;
-        display: none;
       }
-      #poly-popup.visible { display: block; }
-      #poly-popup h3 {
-        margin: 0 0 8px;
+      #poly-popup.visible { display: flex; }
+      #poly-popup-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 12px 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        flex-shrink: 0;
+      }
+      #poly-popup-title {
         font-size: 13px;
+        font-weight: bold;
         color: #cfe0ff;
+        flex: 1;
       }
+      #poly-id-badge {
+        font-size: 11px;
+        font-family: monospace;
+        background: rgba(80,120,220,0.25);
+        border: 1px solid rgba(100,150,255,0.35);
+        border-radius: 4px;
+        padding: 2px 7px;
+        color: #a8c4ff;
+        cursor: default;
+        user-select: text;
+      }
+      .poly-tab-bar {
+        display: flex;
+        flex-shrink: 0;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+      }
+      .poly-tab {
+        flex: 1;
+        padding: 5px 0;
+        font-size: 11px;
+        text-align: center;
+        cursor: pointer;
+        color: #8090b0;
+        background: none;
+        border: none;
+        letter-spacing: 0.04em;
+        transition: color 0.15s, background 0.15s;
+      }
+      .poly-tab:hover { color: #c8dcff; background: rgba(255,255,255,0.04); }
+      .poly-tab.active { color: #cfe0ff; border-bottom: 2px solid #5080d0; }
+      #poly-panels {
+        flex: 1;
+        overflow: auto;
+        padding: 10px 12px 8px;
+      }
+      #poly-panel-summary { display: block; }
+      #poly-panel-json    { display: none; }
+      #poly-panel-summary.active { display: block; }
+      #poly-panel-json.active    { display: block; }
       .poly-row { margin: 3px 0; }
       .poly-key { color: #8ca2cf; }
       #poly-preview {
@@ -124,13 +202,28 @@
         background: rgba(0,0,0,0.4);
         image-rendering: pixelated;
       }
+      #poly-json-pre {
+        margin: 0;
+        font-size: 11px;
+        font-family: 'Courier New', monospace;
+        line-height: 1.5;
+        white-space: pre;
+        color: #c8d8ff;
+        tab-size: 2;
+      }
+      #poly-json-pre .jk { color: #8ca2cf; }
+      #poly-json-pre .jn { color: #f0a060; }
+      #poly-json-pre .js { color: #80d090; }
+      #poly-json-pre .jb { color: #e060a0; }
       .poly-hint {
-        margin-top: 8px;
+        padding: 6px 12px 8px;
         font-size: 11px;
         color: #8699bf;
+        border-top: 1px solid rgba(255,255,255,0.08);
+        flex-shrink: 0;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-BE-Ix5fb.js"></script>
+    <script type="module" crossorigin src="/assets/index-JQVoF9kQ.js"></script>
   </head>
   <body>
     <div id="app"></div>
@@ -145,8 +238,17 @@
       7: atlas viewer<br />
       8: toggle textures / flat colours<br />
       9: room labels<br />
-      WASD / Arrows: move camera<br />
-      click bg triangle: inspect UV/material
+      R: toggle remaster (PBR)<br />
+      G: fog (hazy / gameplay / off)<br />
+      WASD / Arrows: fly camera<br />
+      F / click: enter fly mode<br />
+      Esc: exit fly mode<br />
+      <span id="fly-hint"></span>
+    </div>
+
+    <!-- Fly-mode entry overlay — hidden while pointer is locked -->
+    <div id="fly-overlay">
+      <div id="fly-overlay-msg">Click or press <kbd>F</kbd> to enter fly mode</div>
     </div>
 
     <!-- Atlas texture viewer overlay -->
@@ -158,10 +260,24 @@
     </div>
 
     <div id="poly-popup">
-      <h3>Polygon Inspector</h3>
-      <div id="poly-content"></div>
-      <canvas id="poly-preview"></canvas>
-      <div class="poly-hint">Click another triangle to update. Press Esc to hide.</div>
+      <div id="poly-popup-header">
+        <span id="poly-popup-title">Polygon Inspector</span>
+        <span id="poly-id-badge">—</span>
+      </div>
+      <div class="poly-tab-bar">
+        <button class="poly-tab active" id="poly-tab-summary">Summary</button>
+        <button class="poly-tab"        id="poly-tab-json">JSON</button>
+      </div>
+      <div id="poly-panels">
+        <div id="poly-panel-summary" class="active">
+          <div id="poly-content"></div>
+          <canvas id="poly-preview"></canvas>
+        </div>
+        <div id="poly-panel-json">
+          <pre id="poly-json-pre"></pre>
+        </div>
+      </div>
+      <div class="poly-hint">Click triangle to update · Esc to hide</div>
     </div>
   </body>
 </html>

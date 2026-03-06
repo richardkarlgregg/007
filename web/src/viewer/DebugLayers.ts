@@ -1,5 +1,26 @@
 import * as THREE from "three";
 import type { AtlasManifest, PadRecord, Portal, RoomTriangle, StanTile } from "./StageLoader";
+import type { LoadedOverride } from "./OverrideLoader";
+
+// ---------------------------------------------------------------------------
+// Fog uniforms — shared object so main.ts can update values at runtime and
+// the ShaderMaterial automatically picks them up on the next render frame.
+// ---------------------------------------------------------------------------
+export interface FogUniforms {
+  uFogNear:    { value: number };
+  uFogFar:     { value: number };
+  uFogColor:   { value: THREE.Color };
+  uFogEnabled: { value: number };  // 1.0 = on, 0.0 = off
+}
+
+export function makeFogUniforms(): FogUniforms {
+  return {
+    uFogNear:    { value: 1500 },
+    uFogFar:     { value: 7000 },
+    uFogColor:   { value: new THREE.Color(16 / 255, 48 / 255, 64 / 255) },
+    uFogEnabled: { value: 1.0 }
+  };
+}
 
 function tileColorHex(tile: StanTile): number {
   const r = Math.max(0, Math.min(15, tile.color.r)) * 17;
@@ -120,25 +141,27 @@ const ATLAS_VERTEX_SHADER = /* glsl */ `
   varying   float vMaterialId;
   varying   vec2  vTexelUV;
   varying   vec3  vVertexColor;
-
-  #include <fog_pars_vertex>
+  varying   float vFogDepth;
+  varying   float vWorldY;
 
   void main() {
     vMaterialId  = aMaterialId;
     vTexelUV     = aTexelUV;
     vVertexColor = aVertexColor;
 
+    vec4 worldPos   = modelMatrix * vec4(position, 1.0);
+    vWorldY         = worldPos.y;
+
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mvPosition;
 
-    #include <fog_vertex>
+    // Eye-space depth (positive = in front of camera).
+    vFogDepth = -mvPosition.z;
   }
 `;
 
 const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
-
-  #include <fog_pars_fragment>
 
   uniform sampler2D uAtlas;
   // 1-D lookup texture: each texel i stores (x, y, w, h) in atlas pixels
@@ -147,9 +170,17 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   uniform vec2  uAtlasSize;
   uniform float uLookupWidth;
 
+  // Fog — controlled directly so the G-key toggle is instant and reliable.
+  uniform float uFogNear;
+  uniform float uFogFar;
+  uniform vec3  uFogColor;
+  uniform float uFogEnabled; // 1.0 = on, 0.0 = off
+
   varying float vMaterialId;
   varying vec2  vTexelUV;
   varying vec3  vVertexColor;
+  varying float vFogDepth;
+  varying float vWorldY;
 
   void main() {
     float lu   = (vMaterialId + 0.5) / uLookupWidth;
@@ -163,15 +194,18 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
     vec3 shade = clamp(vVertexColor / 255.0, 0.0, 1.0);
 
     if (itemW <= 0.0 || itemH <= 0.0) {
-      // Magenta checkerboard for unmapped materials (scale by /32 for 10.5 fp).
+      // Magenta checkerboard for unmapped materials.
       float chk = mod(floor(vTexelUV.x / 256.0) + floor(vTexelUV.y / 256.0), 2.0);
       gl_FragColor = vec4(chk, 0.0, chk, 1.0);
+      float chkDist   = clamp((vFogDepth - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
+      float chkHeight = clamp((vWorldY - 80.0) / (320.0 - 80.0), 0.0, 1.0) * 0.7;
+      float chkFog    = clamp(max(chkDist, chkHeight), 0.0, 1.0) * uFogEnabled;
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, uFogColor, chkFog);
       return;
     }
 
-    // vTexelUV is already in texel units (raw 10.5-fp divided by 32 on the
-    // CPU side).  mod() wraps at texture boundaries; GLSL mod() handles
-    // negative values correctly: mod(-x, w) = w - mod(x, w) >= 0.
+    // vTexelUV is in texel units (raw 10.5-fp / 32).  mod() wraps at texture
+    // boundaries; GLSL mod() handles negatives: mod(-x,w) = w - mod(x,w) >= 0.
     float u = mod(vTexelUV.x, itemW) / itemW;
     float v = mod(vTexelUV.y, itemH) / itemH;
 
@@ -182,24 +216,36 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
 
     vec4 tex = texture2D(uAtlas, atlasUV);
 
-    // GoldenEye uses 1-bit alpha (RGBA5551 / CI8 palette entries with alpha 0
-    // or 255).  Discard fully-transparent texels so fences, foliage, and other
-    // cut-out surfaces render correctly.  Now that the materialId off-by-one
-    // is fixed every texture is correct, so the alpha test gives the right result.
+    // 1-bit alpha: discard fully transparent texels (fences, foliage, etc.)
     if (tex.a < 0.5) discard;
 
-    // N64 SHADE * TEXEL0 combine: vertex shade modulates the texture colour.
+    // N64 SHADE * TEXEL0 combine: vertex shade modulates texture colour.
     vec3 rgb = shade * tex.rgb;
-    gl_FragColor = vec4(rgb, 1.0);
 
-    #include <fog_fragment>
+    // Distance fog — eye-space depth linear ramp.
+    float distFog = clamp((vFogDepth - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
+
+    // Height fog — cliff tops and elevated geometry pick up extra haze even
+    // when the camera is nearby.  Map Y range: -239 (floor) → 360 (cliff tops).
+    // Ramps from 0 at Y=80 (above runway floor) to 0.7 at Y=320 (cliff summits).
+    float heightFog = clamp((vWorldY - 80.0) / (320.0 - 80.0), 0.0, 1.0) * 0.7;
+
+    // Take the stronger of the two, then scale by enabled flag.
+    float fogFactor = clamp(max(distFog, heightFog), 0.0, 1.0) * uFogEnabled;
+    rgb = mix(rgb, uFogColor, fogFactor);
+
+    gl_FragColor = vec4(rgb, 1.0);
   }
 `;
 
 export function buildBgMeshWithAtlas(
   triangles: RoomTriangle[],
   atlas: AtlasManifest,
-  atlasTexture: THREE.Texture
+  atlasTexture: THREE.Texture,
+  /** Material IDs handled by PBR overrides — excluded from the atlas shader. */
+  excludeIds: ReadonlySet<number> = new Set(),
+  /** Shared fog uniform values — update .value fields to change fog live. */
+  fogUniforms: FogUniforms = makeFogUniforms()
 ): THREE.Group {
   // ── Atlas item lookup texture ──────────────────────────────────────────────
   // One texel per possible material ID (up to 2500).  Each RGBA32F texel stores
@@ -230,32 +276,34 @@ export function buildBgMeshWithAtlas(
   atlasTexture.minFilter = THREE.NearestFilter;
   atlasTexture.needsUpdate = true;
 
+  // Fog uniforms are passed in by reference — updating .value fields in the
+  // caller automatically propagates to the GPU on the next render frame.
   const sharedUniforms = {
     uAtlas:       { value: atlasTexture },
     uLookup:      { value: lookupTex },
     uAtlasSize:   { value: new THREE.Vector2(atlas.width, atlas.height) },
-    uLookupWidth: { value: LOOKUP_WIDTH }
+    uLookupWidth: { value: LOOKUP_WIDTH },
+    // Spread fog uniforms by reference so live updates from applyFog() work.
+    uFogNear:    fogUniforms.uFogNear,
+    uFogFar:     fogUniforms.uFogFar,
+    uFogColor:   fogUniforms.uFogColor,
+    uFogEnabled: fogUniforms.uFogEnabled
   };
 
   // Base material — primary-DL geometry, no polygon offset.
   const baseMaterial = new THREE.ShaderMaterial({
-    uniforms:       { ...sharedUniforms, ...THREE.UniformsLib.fog },
+    uniforms:       sharedUniforms,
     vertexShader:   ATLAS_VERTEX_SHADER,
     fragmentShader: ATLAS_FRAGMENT_SHADER,
-    side:           THREE.DoubleSide,
-    fog:            true
+    side:           THREE.DoubleSide
   });
 
-  // Decal material — secondary-DL geometry.  GoldenEye renders these with
-  // G_RM_AA_ZB_XLU_DECAL2 (ZMODE_DECAL) which tells the RDP to keep the
-  // existing depth value when drawing the surface so it always appears on top
-  // of co-planar base geometry.  We replicate that with polygonOffset.
+  // Decal material — secondary-DL geometry with polygon offset (ZMODE_DECAL).
   const decalMaterial = new THREE.ShaderMaterial({
-    uniforms:            { ...sharedUniforms, ...THREE.UniformsLib.fog },
+    uniforms:            sharedUniforms,
     vertexShader:        ATLAS_VERTEX_SHADER,
     fragmentShader:      ATLAS_FRAGMENT_SHADER,
     side:                THREE.DoubleSide,
-    fog:                 true,
     polygonOffset:       true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits:  -4
@@ -271,6 +319,9 @@ export function buildBgMeshWithAtlas(
   >();
 
   triangles.forEach((tri, triId) => {
+    // Skip triangles whose material is handled by a PBR override.
+    if (excludeIds.has(tri.materialId)) return;
+
     if (!byMaterial.has(tri.materialId)) {
       materialOrder.push(tri.materialId);
       byMaterial.set(tri.materialId, { pos: [], ids: [], uvs: [], cols: [], triIds: [], hasSecondary: false });
@@ -324,6 +375,116 @@ export function buildBgMeshWithAtlas(
     mesh.renderOrder = orderIdx;
     group.add(mesh);
   });
+
+  return group;
+}
+
+// ---------------------------------------------------------------------------
+// PBR override meshes
+//
+// For each LoadedOverride, collect the triangles whose materialId is in the
+// override's set, build a BufferGeometry with properly-normalised UVs, and
+// attach a MeshStandardMaterial using the loaded PBR maps.
+//
+// UV normalisation: raw N64 UVs ÷ 32 = texel-space floats.  Dividing again
+// by the atlas item's pixel width/height gives a repeating UV in [0..N] where
+// N is the number of texture tiles.  THREE.RepeatWrapping then handles the
+// tiling per-fragment — exactly equivalent to the atlas shader's mod().
+// ---------------------------------------------------------------------------
+export function buildPbrOverrideMeshes(
+  triangles: RoomTriangle[],
+  atlas: AtlasManifest,
+  overrides: LoadedOverride[]
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "bg-pbr-overrides";
+
+  for (const override of overrides) {
+    if (override.materialIds.size === 0) continue;
+
+    // Build separate buffers per material ID so UV normalisation uses the
+    // correct texel size for each atlas item.
+    const byMat = new Map<
+      number,
+      { pos: number[]; uvs: number[]; triIds: number[] }
+    >();
+
+    triangles.forEach((tri, triId) => {
+      if (!override.materialIds.has(tri.materialId)) return;
+      const item = atlas.items[String(tri.materialId)];
+      if (!item) return; // no atlas entry — skip
+
+      if (!byMat.has(tri.materialId)) {
+        byMat.set(tri.materialId, { pos: [], uvs: [], triIds: [] });
+      }
+      const buf = byMat.get(tri.materialId)!;
+      const uw = item.width;
+      const uh = item.height;
+
+      buf.pos.push(
+        tri.a.x, tri.a.y, tri.a.z,
+        tri.b.x, tri.b.y, tri.b.z,
+        tri.c.x, tri.c.y, tri.c.z
+      );
+      // Divide raw N64 texel UV by atlas item dimensions → repeats-domain [0..N]
+      // so THREE.RepeatWrapping tiles the PBR texture the same number of times
+      // as the original N64 texture would.
+      buf.uvs.push(
+        (tri.uvA.u / 32.0) / uw, (tri.uvA.v / 32.0) / uh,
+        (tri.uvB.u / 32.0) / uw, (tri.uvB.v / 32.0) / uh,
+        (tri.uvC.u / 32.0) / uw, (tri.uvC.v / 32.0) / uh
+      );
+      buf.triIds.push(triId);
+    });
+
+    if (byMat.size === 0) continue;
+
+    // Merge all per-material buffers into one geometry for this override entry.
+    const allPos: number[] = [];
+    const allUvs: number[] = [];
+    const allTriIds: number[] = [];
+    for (const buf of byMat.values()) {
+      for (const v of buf.pos)    allPos.push(v);
+      for (const v of buf.uvs)    allUvs.push(v);
+      for (const v of buf.triIds) allTriIds.push(v);
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(allPos, 3));
+    geometry.setAttribute("uv",       new THREE.Float32BufferAttribute(allUvs, 2));
+    // uv2 is required by THREE.MeshStandardMaterial's aoMap.
+    geometry.setAttribute("uv2",      new THREE.Float32BufferAttribute(allUvs, 2));
+    geometry.computeVertexNormals();
+
+    const { maps } = override;
+    const mat = new THREE.MeshStandardMaterial({
+      side:    THREE.DoubleSide,
+      // Colour maps
+      map:             maps.albedo,
+      // Detail / surface maps
+      normalMap:       maps.normal,
+      roughnessMap:    maps.roughness,
+      aoMap:           maps.ao,
+      aoMapIntensity:  1.0,
+      metalnessMap:    maps.metallic,
+      displacementMap: maps.height,
+      displacementScale: maps.heightScale,
+      // When a map is provided the scalar must be 1.0 so the map drives the
+      // value fully.  Without a map, use sensible physical defaults for rock/snow.
+      metalness: maps.metallic  ? 1.0 : 0.0,
+      roughness: maps.roughness ? 1.0 : 0.75,
+      // Polygon offset pushes PBR geometry closer to the camera than the
+      // co-planar atlas mesh so it wins depth tests without z-fighting.
+      polygonOffset:       true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits:  -4
+    });
+
+    const mesh = new THREE.Mesh(geometry, mat);
+    mesh.name = `pbr-override-${override.name}`;
+    mesh.userData.triangleIds = allTriIds;
+    group.add(mesh);
+  }
 
   return group;
 }

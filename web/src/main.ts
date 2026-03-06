@@ -1,7 +1,9 @@
 import * as THREE from "three";
-import { buildBgMesh, buildBgMeshWithAtlas, buildPadsLayer, buildPortalsLayer, buildRoomLabelsLayer, buildStanMesh } from "./viewer/DebugLayers";
+import { buildBgMesh, buildBgMeshWithAtlas, buildPbrOverrideMeshes, buildPadsLayer, buildPortalsLayer, buildRoomLabelsLayer, buildStanMesh, makeFogUniforms } from "./viewer/DebugLayers";
+import type { FogUniforms } from "./viewer/DebugLayers";
 import { loadStageData } from "./viewer/StageLoader";
 import type { AtlasManifest, RoomTriangle } from "./viewer/StageLoader";
+import { loadOverrides } from "./viewer/OverrideLoader";
 
 async function bootstrap(): Promise<void> {
   const root = document.getElementById("app");
@@ -9,11 +11,91 @@ async function bootstrap(): Promise<void> {
     throw new Error("Missing #app element");
   }
 
-  // GoldenEye runway atmosphere: dark pre-dawn sky with heavy distance fog.
-  const fogColor = new THREE.Color(0x151a28);
+  // ── Fog — derived from src/game/fog.c, LEVELID_RUNWAY ──────────────────────
+  //
+  // Technical reality (from source):
+  //   BlendMultiplier = 10   → znear clip plane (world units)
+  //   FarFog          = 15000 → zfar clip plane (draw distance)
+  //   dif_ght  = 0x3E4 (996) → gSPFogPosition min (0-1000 clip-space)
+  //   far_alight = 0x3E8 (1000) → gSPFogPosition max
+  //
+  //   Converting clip-space to world-space:
+  //     fogStart = (996/1000) × (15000-10) + 10 = 14,940 world units
+  //     fogEnd   = (1000/1000) × (15000-10) + 10 = 15,000 world units
+  //
+  //   The RSP fog ramp is only ~60 world units wide, right at the far clip.
+  //   NearFog=6000 is the CPU prop-culling distance, NOT a visual fog onset.
+  //   The N64 "haze" effect comes from:
+  //     (a) sky/background colour == fog colour (objects fade into the sky)
+  //     (b) hard far-clip at 15000, blurred by 320×240 + CRT display
+  //     (c) G_AD_NOISE dither on fog alpha, softening the clip edge
+  //
+  // Sky colour: RGB(0x10, 0x30, 0x40) = (16, 48, 64) — dark pre-dawn steel blue
+  //
+  // Three fog modes (cycle with G key):
+  //   0 – N64 Accurate : thin LINEAR ramp just before the 15000 clip plane
+  //   1 – Hazy         : FogExp2 soft atmospheric haze (best for high-res)
+  //   2 – Off          : no fog, dark neutral background (debug)
+
+  const FOG_COLOR = new THREE.Color(16 / 255, 48 / 255, 64 / 255); // N64 sky
+  const NO_FOG_BG = new THREE.Color(0x080c14);                      // debug bg
+
+  // fog_tables[] per-level data (NTSC) — for reference / future multi-stage use
+  // Stage        znear  zfar   fogStart  fogEnd   R     G     B
+  // RUNWAY          10  15000   14940    15000   0x10  0x30  0x40
+  // DAM              5  15000   14940    15000   0x10  0x30  0x60
+  // SURFACE          2   2500    2495     2500   0x60  0x60  0x80
+  // FACILITY        10   5000    4970     5000   0x10  0x20  0x10
+  // CRADLE          10   9500    9461     9500   0x60  0x80  0xA0
+  // EGYPT           10  20000   19940    20000   0x10  0x30  0x60
+  // BUNKER2         10  10000    9970    10000   0x10  0x00  0x00
+
+  // Three fog modes (cycle with G):
+  //
+  //  "gameplay"  — matches N64 draw-distance feel: NearFog=6000 (prop culling),
+  //                FarFog=15000 (zfar clip).  Linear ramp 6000→15000.
+  //                Clear sky close-up, horizon fully fogged at the clip distance.
+  //
+  //  "hazy"      — stronger effect for high-res viewing.  Fog builds from ~1500u
+  //                so you feel the atmosphere while flying around the map:
+  //                  ~0 % at 1500u  |  ~50 % at 4250u  |  ~100 % at 7000u
+  //
+  //  "off"       — no fog, neutral dark sky (debug / wireframe use)
+
+  type FogMode = "gameplay" | "hazy" | "off";
+  let fogMode: FogMode = "hazy";
+
+  // Shared fog uniform objects — the atlas ShaderMaterial holds references to
+  // these same objects, so updating .value here is reflected on the next frame.
+  const fogUniforms: FogUniforms = makeFogUniforms();
+
+  function applyFog(): void {
+    if (fogMode === "off") {
+      scene.fog        = null;
+      scene.background = NO_FOG_BG.clone();
+      fogUniforms.uFogEnabled.value = 0.0;
+      return;
+    }
+    scene.background = FOG_COLOR.clone();
+    fogUniforms.uFogEnabled.value = 1.0;
+    fogUniforms.uFogColor.value.copy(FOG_COLOR);
+
+    if (fogMode === "gameplay") {
+      // Scaled to map bounds (X:257-1592, Z:-2806 to -99 ≈ 2700u deep).
+      // Clear nearby, heavy at the far edge of the runway.
+      scene.fog = new THREE.Fog(FOG_COLOR.clone(), 500, 2500);
+      fogUniforms.uFogNear.value = 500;
+      fogUniforms.uFogFar.value  = 2500;
+    } else {
+      // Hazy: ~50% fog at ~600u so distant rooms/mountains fade visibly.
+      scene.fog = new THREE.Fog(FOG_COLOR.clone(), 200, 1200);
+      fogUniforms.uFogNear.value = 200;
+      fogUniforms.uFogFar.value  = 1200;
+    }
+  }
+
   const scene = new THREE.Scene();
-  scene.background = fogColor;
-  scene.fog = new THREE.Fog(fogColor, 800, 4000);
+  applyFog(); // sets initial fog on both scene and fogUniforms
 
   const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 20000);
   camera.position.set(850, 420, -1250);
@@ -55,12 +137,21 @@ async function bootstrap(): Promise<void> {
     camera.rotation.x = pitch;
   });
 
-  const hemi = new THREE.HemisphereLight(0xb6d1ff, 0x202020, 0.8);
+  // The atlas ShaderMaterial uses pre-baked N64 vertex colours and is completely
+  // immune to scene lights, so these lights only affect MeshStandardMaterial
+  // objects (PBR overrides, stan mesh).  They are intentionally brighter than
+  // a typical outdoor rig so the remaster materials match the N64 brightness.
+  const hemi = new THREE.HemisphereLight(0xdce8ff, 0x303040, 2.5);
   scene.add(hemi);
 
-  const directional = new THREE.DirectionalLight(0xffffff, 1.0);
+  const directional = new THREE.DirectionalLight(0xfff4e0, 2.5);
   directional.position.set(400, 1000, -200);
   scene.add(directional);
+
+  // Fill light from the opposite side to soften deep shadows on PBR surfaces.
+  const fill = new THREE.DirectionalLight(0xb0c8ff, 0.8);
+  fill.position.set(-400, 400, 200);
+  scene.add(fill);
 
   const grid = new THREE.GridHelper(6000, 120, 0x3f4558, 0x202633);
   scene.add(grid);
@@ -73,10 +164,27 @@ async function bootstrap(): Promise<void> {
   const flatBgMesh: THREE.Object3D = buildBgMesh(stage.roomTriangles);
   let atlasBgMesh: THREE.Object3D | null = null;
 
+  // ── PBR overrides ──────────────────────────────────────────────────────────
+  // Try to load runway_overrides.json; silently no-ops if the file is absent or
+  // all entries have empty materialIds arrays (first-time setup).
+  const overridesPath = `${import.meta.env.BASE_URL}data/stages/runway_overrides.json`;
+  const pbr = await loadOverrides(overridesPath, import.meta.env.BASE_URL);
+  let pbrOverrideGroup: THREE.Group | null = null;
+  // true = remaster PBR is shown (when available); can be toggled with R key.
+  let pbrEnabled = true;
+
   if (stage.atlas) {
     atlasPath = `${import.meta.env.BASE_URL}data/stages/${stage.atlas.atlasImage}`;
     const atlasTexture = await new THREE.TextureLoader().loadAsync(atlasPath);
-    atlasBgMesh = buildBgMeshWithAtlas(stage.roomTriangles, stage.atlas, atlasTexture);
+    // Atlas mesh always covers all materials.  PBR layer sits on top via
+    // polygon offset so toggling it off cleanly reveals the N64 texture below.
+    // Pass fogUniforms so the shader can update fog live via the G key.
+    atlasBgMesh = buildBgMeshWithAtlas(stage.roomTriangles, stage.atlas, atlasTexture, new Set(), fogUniforms);
+
+    if (pbr.length > 0) {
+      pbrOverrideGroup = buildPbrOverrideMeshes(stage.roomTriangles, stage.atlas, pbr);
+      scene.add(pbrOverrideGroup);
+    }
   }
 
   // Start in textured mode if atlas is available, otherwise flat colours.
@@ -243,7 +351,12 @@ async function bootstrap(): Promise<void> {
     pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointerNdc, camera);
 
-    const hits = raycaster.intersectObject(bgMesh, true);
+    // Check both the main bg mesh and any visible PBR override geometry.
+    const candidates: THREE.Object3D[] = [bgMesh];
+    if (pbrOverrideGroup?.visible) candidates.push(pbrOverrideGroup);
+    const hits = candidates
+      .flatMap((obj) => raycaster.intersectObject(obj, true))
+      .sort((a, b) => a.distance - b.distance);
     const hit = hits.find((h) => h.object instanceof THREE.Mesh && Array.isArray((h.object as THREE.Mesh).userData.triangleIds));
     if (!hit || hit.faceIndex === undefined) {
       return;
@@ -262,6 +375,8 @@ async function bootstrap(): Promise<void> {
   window.addEventListener("keydown", (event) => {
     if (event.key === "1") {
       bgMesh.visible = !bgMesh.visible;
+      // PBR overrides are only visible in atlas mode when remaster is enabled.
+      if (pbrOverrideGroup && useAtlas) pbrOverrideGroup.visible = bgMesh.visible && pbrEnabled;
     } else if (event.key === "2") {
       stanMesh.visible = !stanMesh.visible;
     } else if (event.key === "3") {
@@ -314,9 +429,21 @@ async function bootstrap(): Promise<void> {
           scene.add(next);
         }
         bgMesh = next;
+        // PBR overrides are only meaningful in atlas mode and when enabled.
+        if (pbrOverrideGroup) pbrOverrideGroup.visible = useAtlas && wasVisible && pbrEnabled;
       }
     } else if (event.key === "9") {
       roomLabelsLayer.visible = !roomLabelsLayer.visible;
+    } else if (event.key === "r" || event.key === "R") {
+      // Toggle remaster (PBR override) layer on/off.
+      if (pbrOverrideGroup) {
+        pbrEnabled = !pbrEnabled;
+        pbrOverrideGroup.visible = useAtlas && bgMesh.visible && pbrEnabled;
+      }
+    } else if (event.key === "g" || event.key === "G") {
+      // Cycle fog modes: hazy → gameplay → off → hazy …
+      fogMode = fogMode === "hazy" ? "gameplay" : fogMode === "gameplay" ? "off" : "hazy";
+      applyFog();
     } else if (event.key === "f" || event.key === "F") {
       if (flyMode) document.exitPointerLock();
       else renderer.domElement.requestPointerLock();

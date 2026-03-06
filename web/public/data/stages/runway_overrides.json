@@ -1,0 +1,26 @@
+{
+  "_readme": [
+    "PBR texture overrides for the runway stage.",
+    "Find material IDs using the poly inspector in the viewer:",
+    "  1. Click on a triangle in the 3-D view",
+    "  2. The pop-up 'Summary' tab shows the 'material:' number",
+    "All texture paths are relative to 'basePath'.",
+    "heightScale defaults to 0 (displacement disabled on low-poly N64 mesh).",
+    "Set it to a small positive value (e.g. 4.0) to enable displacement."
+  ],
+  "basePath": "data/stages/",
+  "overrides": [
+    {
+      "name": "snow_cliff",
+      "_comment": "Replace cliff / mountain polygon textures with hi-res PBR maps.  Fill in the materialIds array after inspecting the triangles you want to upgrade.",
+      "materialIds": [950,949],
+      "albedo":    "snow_cliff_albedo.png",
+      "normal":    "snow_cliff_normal.png",
+      "roughness": "snow_cliff_roughness.png",
+      "ao":        "snow_cliff_ao.png",
+      "metallic":  "snow_cliff_metallic.png",
+      "height":    "snow_cliff_height.png",
+      "heightScale": 0
+    }
+  ]
+}
