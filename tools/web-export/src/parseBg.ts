@@ -20,11 +20,31 @@ export interface Portal {
   points: Vec3[];
 }
 
+export interface VertexColour {
+  r: number;
+  g: number;
+  b: number;
+}
+
 export interface RoomTriangle {
   roomIndex: number;
+  materialId: number;
+  /** True when this triangle originates from the room's secondary display list.
+   *  GoldenEye always renders secondary-DL geometry with G_RM_AA_ZB_XLU_DECAL2,
+   *  so these triangles need polygon-offset decal treatment in the viewer. */
+  isSecondary: boolean;
   a: Vec3;
   b: Vec3;
   c: Vec3;
+  uvA: { u: number; v: number };
+  uvB: { u: number; v: number };
+  uvC: { u: number; v: number };
+  /** Per-vertex N64 shade colours (bytes 12–14 of the vertex buffer).
+   *  The viewer applies SHADE * TEXEL combining: for fully-transparent texture
+   *  pixels (alpha=0) the shade colour shows instead of black. */
+  colA: VertexColour;
+  colB: VertexColour;
+  colC: VertexColour;
 }
 
 function parseIntAuto(input: string): number {
@@ -92,6 +112,13 @@ interface ParsedVertex {
   x: number;
   y: number;
   z: number;
+  u: number;
+  v: number;
+  /** Vertex colour bytes from the N64 vertex buffer (bytes 12–14).
+   *  Used by the viewer to replicate SHADE * TEXEL0 combining. */
+  r: number;
+  g: number;
+  b: number;
 }
 
 function readI16BE(data: Uint8Array, offset: number): number {
@@ -105,7 +132,14 @@ function parseVertexTable(data: Uint8Array): ParsedVertex[] {
     vertices.push({
       x: readI16BE(data, offset),
       y: readI16BE(data, offset + 2),
-      z: readI16BE(data, offset + 4)
+      z: readI16BE(data, offset + 4),
+      // N64 vertex texture coordinates are signed 10.5 fixed-point.
+      u: readI16BE(data, offset + 8),
+      v: readI16BE(data, offset + 10),
+      // N64 vertex colour (bytes 12–14).  Used for SHADE * TEXEL combining.
+      r: data[offset + 12],
+      g: data[offset + 13],
+      b: data[offset + 14]
     });
   }
   return vertices;
@@ -164,7 +198,32 @@ function decodeTri4(triWord0: number, triWord1: number): [number, number, number
   return [tri1, tri2, tri3, tri4];
 }
 
-function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Uint8Array, arrays: Map<string, Uint8Array>): RoomTriangle[] {
+function pushTriangle(
+  triangles: RoomTriangle[],
+  room: RoomDataRef,
+  materialId: number,
+  isSecondary: boolean,
+  a: ParsedVertex,
+  b: ParsedVertex,
+  c: ParsedVertex
+): void {
+  triangles.push({
+    roomIndex: room.roomIndex,
+    materialId,
+    isSecondary,
+    a: { x: a.x + room.center.x, y: a.y + room.center.y, z: a.z + room.center.z },
+    b: { x: b.x + room.center.x, y: b.y + room.center.y, z: b.z + room.center.z },
+    c: { x: c.x + room.center.x, y: c.y + room.center.y, z: c.z + room.center.z },
+    uvA: { u: a.u, v: a.v },
+    uvB: { u: b.u, v: b.v },
+    uvC: { u: c.u, v: c.v },
+    colA: { r: a.r, g: a.g, b: a.b },
+    colB: { r: b.r, g: b.g, b: b.b },
+    colC: { r: c.r, g: c.g, b: c.b }
+  });
+}
+
+function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Uint8Array, arrays: Map<string, Uint8Array>, isSecondary: boolean): RoomTriangle[] {
   if (!room.pointArrayName) {
     return [];
   }
@@ -182,6 +241,14 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
   const vertices = parseVertexTable(vertexBuffer);
   const cache: Array<ParsedVertex | null> = new Array(64).fill(null);
   const triangles: RoomTriangle[] = [];
+  let currentMaterialId = 0;
+  // Some display lists start with geometry rendered in environment-colour
+  // (no-texture) mode before any material command.  These are atmospheric/fog
+  // meshes that should not carry a texture in the viewer.  Track the current
+  // G_SETCOMBINE state and skip triangle emission while in no-texture mode.
+  // The no-texture combine is identified by the lower 3 bytes of word0 all
+  // being 0xFF (pattern: 0xFC FF FF FF).
+  let isNoTexMode = false;
 
   for (let offset = 0; offset + 7 < mappingBuffer.length; offset += 8) {
     const word0 =
@@ -195,6 +262,18 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
       (mappingBuffer[offset + 6] << 8) |
       mappingBuffer[offset + 7];
     const command = (word0 >>> 24) & 0xff;
+
+    // G_SETCOMBINE (0xFC): update no-texture mode flag.
+    if (command === 0xfc) {
+      isNoTexMode = (word0 & 0x00ffffff) === 0x00ffffff;
+      continue;
+    }
+
+    // GE custom state command used by room display lists for material/texture selection.
+    if (command === 0xc0) {
+      currentMaterialId = word1 & 0xffff;
+      continue;
+    }
 
     // F3DEX2 G_VTX command.
     if (command === 0x04) {
@@ -221,22 +300,19 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
 
     // Command 0xB1 is TRI4 in GE's microcode extension.
     if (command === 0xb1) {
-      for (const [i0, i1, i2] of decodeTri4(word0 >>> 0, word1 >>> 0)) {
-        if (i0 === 0 && i1 === 0 && i2 === 0) {
-          continue;
+      if (!isNoTexMode) {
+        for (const [i0, i1, i2] of decodeTri4(word0 >>> 0, word1 >>> 0)) {
+          if (i0 === 0 && i1 === 0 && i2 === 0) {
+            continue;
+          }
+          const a = cache[i0];
+          const b = cache[i1];
+          const c = cache[i2];
+          if (!a || !b || !c) {
+            continue;
+          }
+          pushTriangle(triangles, room, currentMaterialId, isSecondary, a, b, c);
         }
-        const a = cache[i0];
-        const b = cache[i1];
-        const c = cache[i2];
-        if (!a || !b || !c) {
-          continue;
-        }
-        triangles.push({
-          roomIndex: room.roomIndex,
-          a: { x: a.x + room.center.x, y: a.y + room.center.y, z: a.z + room.center.z },
-          b: { x: b.x + room.center.x, y: b.y + room.center.y, z: b.z + room.center.z },
-          c: { x: c.x + room.center.x, y: c.y + room.center.y, z: c.z + room.center.z }
-        });
       }
       continue;
     }
@@ -244,20 +320,17 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
     // Command 0xBF is G_TRI1 in GE's F3DEX microcode.
     // Indices are stored in w1 as (v*10) per byte: bits [23:16], [15:8], [7:0].
     if (command === 0xbf) {
-      const i0 = ((word1 >>> 16) & 0xff) / 10;
-      const i1 = ((word1 >>> 8) & 0xff) / 10;
-      const i2 = (word1 & 0xff) / 10;
-      if (i0 !== i1 || i1 !== i2) {
-        const a = cache[i0];
-        const b = cache[i1];
-        const c = cache[i2];
-        if (a && b && c) {
-          triangles.push({
-            roomIndex: room.roomIndex,
-            a: { x: a.x + room.center.x, y: a.y + room.center.y, z: a.z + room.center.z },
-            b: { x: b.x + room.center.x, y: b.y + room.center.y, z: b.z + room.center.z },
-            c: { x: c.x + room.center.x, y: c.y + room.center.y, z: c.z + room.center.z }
-          });
+      if (!isNoTexMode) {
+        const i0 = ((word1 >>> 16) & 0xff) / 10;
+        const i1 = ((word1 >>> 8) & 0xff) / 10;
+        const i2 = (word1 & 0xff) / 10;
+        if (i0 !== i1 || i1 !== i2) {
+          const a = cache[i0];
+          const b = cache[i1];
+          const c = cache[i2];
+          if (a && b && c) {
+            pushTriangle(triangles, room, currentMaterialId, isSecondary, a, b, c);
+          }
         }
       }
       continue;
@@ -278,14 +351,16 @@ function decodeRoomTriangles(room: RoomDataRef, arrays: Map<string, Uint8Array>)
   if (room.priArrayName) {
     const priCompressed = arrays.get(room.priArrayName);
     if (priCompressed) {
-      triangles.push(...decodeRoomTrianglesFromMapping(room, priCompressed, arrays));
+      triangles.push(...decodeRoomTrianglesFromMapping(room, priCompressed, arrays, false));
     }
   }
 
   if (room.secArrayName && room.secArrayName !== room.priArrayName) {
     const secCompressed = arrays.get(room.secArrayName);
     if (secCompressed) {
-      triangles.push(...decodeRoomTrianglesFromMapping(room, secCompressed, arrays));
+      // Secondary display list always uses G_RM_AA_ZB_XLU_DECAL2 in GoldenEye
+      // (see DL_LUT_SECONDARY_ADDFOG in bg.c) — mark every triangle accordingly.
+      triangles.push(...decodeRoomTrianglesFromMapping(room, secCompressed, arrays, true));
     }
   }
 

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildRunwayAtlas, type AtlasManifest } from "./buildRunwayAtlas.js";
 import { parseBgFile } from "./parseBg.js";
 import { parseSetupPadlist } from "./parseSetup.js";
 import { parseStanFile } from "./parseStan.js";
@@ -17,6 +18,7 @@ interface StageOutput {
   portals: ReturnType<typeof parseBgFile>["portals"];
   roomCenters: ReturnType<typeof parseBgFile>["roomCenters"];
   roomTriangles: ReturnType<typeof parseBgFile>["roomTriangles"];
+  atlas: AtlasManifest;
 }
 
 function normalizePath(p: string): string {
@@ -55,6 +57,8 @@ const bg = parseBgFile(sourceFiles.bg);
 const portals = bg.portals.sort((a, b) => a.name.localeCompare(b.name));
 const roomCenters = bg.roomCenters.sort((a, b) => a.roomIndex - b.roomIndex);
 const roomTriangles = bg.roomTriangles;
+const materialIds = [...new Set(roomTriangles.map((tri) => tri.materialId))];
+const atlas = buildRunwayAtlas(repoRoot, materialIds);
 
 const outputData: StageOutput = {
   stage: "runway",
@@ -67,7 +71,8 @@ const outputData: StageOutput = {
   pads,
   portals,
   roomCenters,
-  roomTriangles
+  roomTriangles,
+  atlas
 };
 
 const outputDir = path.resolve(repoRoot, "web/public/data/stages");
