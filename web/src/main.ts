@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { buildBgMesh, buildBgMeshWithAtlas, buildPadsLayer, buildPortalsLayer, buildRoomLabelsLayer, buildStanMesh } from "./viewer/DebugLayers";
 import { loadStageData } from "./viewer/StageLoader";
 import type { AtlasManifest, RoomTriangle } from "./viewer/StageLoader";
@@ -18,17 +17,43 @@ async function bootstrap(): Promise<void> {
 
   const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 20000);
   camera.position.set(850, 420, -1250);
+  // Establish initial look direction, then bake into yaw/pitch for fly camera.
+  camera.rotation.order = "YXZ";
+  camera.lookAt(850, 0, -900);
+  let yaw   = camera.rotation.y;
+  let pitch = camera.rotation.x;
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   root.appendChild(renderer.domElement);
 
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(850, 0, -900);
-  controls.enableDamping = true;
-  controls.enableKeys = false;
-  controls.update();
+  // ── Pointer-lock free-fly ────────────────────────────────────────────────
+  let flyMode = false;
+  const flyOverlay = document.getElementById("fly-overlay");
+  const flyHint    = document.getElementById("fly-hint");
+
+  function setFlyMode(active: boolean): void {
+    flyMode = active;
+    if (flyOverlay) flyOverlay.style.display = active ? "none" : "flex";
+    if (flyHint)    flyHint.textContent       = active ? "Esc — exit fly mode" : "";
+  }
+  setFlyMode(false);
+
+  document.addEventListener("pointerlockchange", () => {
+    setFlyMode(document.pointerLockElement === renderer.domElement);
+  });
+
+  document.addEventListener("mousemove", (e: MouseEvent) => {
+    if (!flyMode) return;
+    const sensitivity = 0.002;
+    yaw   -= e.movementX * sensitivity;
+    pitch -= e.movementY * sensitivity;
+    pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+  });
 
   const hemi = new THREE.HemisphereLight(0xb6d1ff, 0x202020, 0.8);
   scene.add(hemi);
@@ -84,10 +109,9 @@ async function bootstrap(): Promise<void> {
     right: false
   };
   const clock = new THREE.Clock();
-  const lookDir = new THREE.Vector3();
   const forward = new THREE.Vector3();
-  const right = new THREE.Vector3();
-  const move = new THREE.Vector3();
+  const right    = new THREE.Vector3();
+  const move     = new THREE.Vector3();
 
   function setMovementKey(key: string, down: boolean): boolean {
     const normalized = key.toLowerCase();
@@ -204,6 +228,15 @@ async function bootstrap(): Promise<void> {
   }
 
   renderer.domElement.addEventListener("click", (event) => {
+    // When not in fly mode, left-click on canvas requests pointer lock (enters fly).
+    // The click that triggers pointer lock is consumed here; subsequent clicks
+    // while locked are ignored so we don't accidentally fire the inspector.
+    if (!flyMode) {
+      renderer.domElement.requestPointerLock();
+      // Still fall through so clicking a polygon also locks AND inspects.
+    } else {
+      return; // pointer is locked — ignore clicks inside fly mode
+    }
     if (!bgMesh.visible) return;
     const rect = renderer.domElement.getBoundingClientRect();
     pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -284,8 +317,15 @@ async function bootstrap(): Promise<void> {
       }
     } else if (event.key === "9") {
       roomLabelsLayer.visible = !roomLabelsLayer.visible;
+    } else if (event.key === "f" || event.key === "F") {
+      if (flyMode) document.exitPointerLock();
+      else renderer.domElement.requestPointerLock();
     } else if (event.key === "Escape") {
-      hidePolygonPopup();
+      if (flyMode) {
+        document.exitPointerLock();
+      } else {
+        hidePolygonPopup();
+      }
     }
   });
 
@@ -301,20 +341,18 @@ async function bootstrap(): Promise<void> {
     const moveX = (movementKeys.right ? 1 : 0) - (movementKeys.left ? 1 : 0);
     const moveZ = (movementKeys.forward ? 1 : 0) - (movementKeys.back ? 1 : 0);
     if (moveX !== 0 || moveZ !== 0) {
-      lookDir.subVectors(controls.target, camera.position);
-      lookDir.y = 0;
-      if (lookDir.lengthSq() > 1e-6) {
-        forward.copy(lookDir).normalize();
-        right.crossVectors(forward, camera.up).normalize();
-        move.set(0, 0, 0);
-        if (moveZ !== 0) move.addScaledVector(forward, moveZ);
-        if (moveX !== 0) move.addScaledVector(right, moveX);
+      // camera.getWorldDirection gives the exact forward vector regardless of
+      // how the camera was rotated — no orbit target needed.
+      camera.getWorldDirection(forward);
+      right.crossVectors(forward, camera.up).normalize();
+      move.set(0, 0, 0);
+      if (moveZ !== 0) move.addScaledVector(forward, moveZ);
+      if (moveX !== 0) move.addScaledVector(right, moveX);
+      if (move.lengthSq() > 0) {
         move.normalize().multiplyScalar(moveSpeed * delta);
         camera.position.add(move);
-        controls.target.add(move);
       }
     }
-    controls.update();
     renderer.render(scene, camera);
     requestAnimationFrame(animate);
   };
