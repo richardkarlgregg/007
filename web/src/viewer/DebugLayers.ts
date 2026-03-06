@@ -182,11 +182,13 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
 
     vec4 tex = texture2D(uAtlas, atlasUV);
 
+    // GoldenEye uses 1-bit alpha (RGBA5551 / CI8 palette entries with alpha 0
+    // or 255).  Discard fully-transparent texels so fences, foliage, and other
+    // cut-out surfaces render correctly.  Now that the materialId off-by-one
+    // is fixed every texture is correct, so the alpha test gives the right result.
+    if (tex.a < 0.5) discard;
+
     // N64 SHADE * TEXEL0 combine: vertex shade modulates the texture colour.
-    // NOTE: The runway level uses G_RM_AA_ZB_OPA_SURF (opaque) for ALL bg
-    // surfaces — CVG_X_ALPHA is never set, so texture alpha NEVER triggers
-    // pixel discard.  Palette entries with alpha=0 (e.g. CI8/RGBA5551 rock
-    // crevices) contribute shade * vec3(0) = black, not transparent holes.
     vec3 rgb = shade * tex.rgb;
     gl_FragColor = vec4(rgb, 1.0);
 
