@@ -1004,7 +1004,8 @@ export function buildRunwayAtlas(repoRoot: string, materialIds: number[]): Atlas
       width: w,
       height: h,
       decoded: image.decoded,
-      imageName: imageNames.get(id) ?? `image${id}`
+      // materialId is now 1-based (file number), so look up name at index id-1.
+      imageName: imageNames.get(id - 1) ?? `image${id}`
     });
 
     x += w + padding;

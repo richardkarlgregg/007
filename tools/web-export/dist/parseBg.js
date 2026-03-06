@@ -168,8 +168,11 @@ function decodeRoomTrianglesFromMapping(room, mappingCompressed, arrays, isSecon
             continue;
         }
         // GE custom state command used by room display lists for material/texture selection.
+        // word1[15:0] holds a 0-based images.def index.  The split files on disk are
+        // 1-based (image1.bin = first entry, image0.bin does not exist), so we add 1
+        // here to align materialId with the on-disk file number used by the atlas builder.
         if (command === 0xc0) {
-            currentMaterialId = word1 & 0xffff;
+            currentMaterialId = (word1 & 0xffff) + 1;
             continue;
         }
         // F3DEX2 G_VTX command.

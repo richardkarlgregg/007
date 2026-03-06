@@ -182,14 +182,11 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
 
     vec4 tex = texture2D(uAtlas, atlasUV);
 
-    // Alpha test: discard fully-transparent pixels (e.g. CI8 palette entries
-    // with RGBA5551 alpha-bit = 0, or IA palette entries with alpha = 0).
-    // GoldenEye uses 1-bit alpha for most surfaces, so the 0.5 threshold is
-    // exact.  This must come before any colour write so discarded pixels also
-    // skip depth writes — correct for fences, grates, and pillar-pattern walls.
-    if (tex.a < 0.5) discard;
-
     // N64 SHADE * TEXEL0 combine: vertex shade modulates the texture colour.
+    // NOTE: The runway level uses G_RM_AA_ZB_OPA_SURF (opaque) for ALL bg
+    // surfaces — CVG_X_ALPHA is never set, so texture alpha NEVER triggers
+    // pixel discard.  Palette entries with alpha=0 (e.g. CI8/RGBA5551 rock
+    // crevices) contribute shade * vec3(0) = black, not transparent holes.
     vec3 rgb = shade * tex.rgb;
     gl_FragColor = vec4(rgb, 1.0);
 
@@ -225,8 +222,10 @@ export function buildBgMeshWithAtlas(
   atlasTexture.flipY     = false;
   atlasTexture.wrapS     = THREE.ClampToEdgeWrapping;
   atlasTexture.wrapT     = THREE.ClampToEdgeWrapping;
-  atlasTexture.magFilter = THREE.LinearFilter;
-  atlasTexture.minFilter = THREE.LinearFilter;
+  // NearestFilter matches N64 point-sampling and prevents bilinear bleed of
+  // transparent padding pixels into texture edges within the atlas.
+  atlasTexture.magFilter = THREE.NearestFilter;
+  atlasTexture.minFilter = THREE.NearestFilter;
   atlasTexture.needsUpdate = true;
 
   const sharedUniforms = {

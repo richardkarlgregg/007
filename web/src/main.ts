@@ -144,11 +144,27 @@ async function bootstrap(): Promise<void> {
   });
 
   // Polygon inspector (click any visible BG triangle).
-  const polyPopup = document.getElementById("poly-popup");
-  const polyContent = document.getElementById("poly-content");
-  const polyPreview = document.getElementById("poly-preview") as HTMLCanvasElement;
+  const polyPopup     = document.getElementById("poly-popup");
+  const polyContent   = document.getElementById("poly-content");
+  const polyPreview   = document.getElementById("poly-preview") as HTMLCanvasElement;
+  const polyIdBadge   = document.getElementById("poly-id-badge");
+  const polyTabSum    = document.getElementById("poly-tab-summary");
+  const polyTabJson   = document.getElementById("poly-tab-json");
+  const polyPanelSum  = document.getElementById("poly-panel-summary");
+  const polyPanelJson = document.getElementById("poly-panel-json");
+  const polyJsonPre   = document.getElementById("poly-json-pre");
   const raycaster = new THREE.Raycaster();
   const pointerNdc = new THREE.Vector2();
+
+  // Switch between Summary / JSON tabs without losing current data.
+  function activatePolyTab(tab: "summary" | "json"): void {
+    polyTabSum?.classList.toggle("active", tab === "summary");
+    polyTabJson?.classList.toggle("active", tab === "json");
+    polyPanelSum?.classList.toggle("active", tab === "summary");
+    polyPanelJson?.classList.toggle("active", tab === "json");
+  }
+  polyTabSum?.addEventListener("click", () => activatePolyTab("summary"));
+  polyTabJson?.addEventListener("click", () => activatePolyTab("json"));
 
   function hidePolygonPopup(): void {
     polyPopup?.classList.remove("visible");
@@ -157,9 +173,13 @@ async function bootstrap(): Promise<void> {
   function renderPolygonPopup(triId: number, tri: RoomTriangle): void {
     if (!polyPopup || !polyContent) return;
     const atlasItem = stage.atlas?.items[String(tri.materialId)];
+
+    // ── Badge ──────────────────────────────────────────────────────────────
+    if (polyIdBadge) polyIdBadge.textContent = `#${triId}`;
+
+    // ── Summary tab ────────────────────────────────────────────────────────
     const uvInfo = formatUvInfo(tri, atlasItem);
     polyContent.innerHTML = `
-      <div class="poly-row"><span class="poly-key">polyId:</span> ${triId}</div>
       <div class="poly-row"><span class="poly-key">room:</span> ${tri.roomIndex}</div>
       <div class="poly-row"><span class="poly-key">material:</span> ${tri.materialId}</div>
       <div class="poly-row"><span class="poly-key">secondary DL:</span> ${tri.isSecondary ? "yes" : "no"}</div>
@@ -167,11 +187,19 @@ async function bootstrap(): Promise<void> {
       <div class="poly-row"><span class="poly-key">uvB:</span> ${uvInfo.b}</div>
       <div class="poly-row"><span class="poly-key">uvC:</span> ${uvInfo.c}</div>
       <div class="poly-row"><span class="poly-key">atlas item:</span> ${
-        atlasItem ? `${atlasItem.width}x${atlasItem.height} @ (${atlasItem.x}, ${atlasItem.y})` : "not found"
+        atlasItem
+          ? `${atlasItem.width}×${atlasItem.height} @ (${atlasItem.x}, ${atlasItem.y}) — ${atlasItem.imageName}`
+          : "not found"
       }</div>
     `;
-
     drawMaterialPreview(polyPreview, atlasImg, stage.atlas, tri.materialId);
+
+    // ── JSON tab ───────────────────────────────────────────────────────────
+    if (polyJsonPre) {
+      const entry = { triId, ...tri };
+      polyJsonPre.innerHTML = syntaxHighlightJson(JSON.stringify(entry, null, 2));
+    }
+
     polyPopup.classList.add("visible");
   }
 
@@ -368,6 +396,26 @@ function drawMaterialPreview(
     canvas.width,
     canvas.height
   );
+}
+
+// Lightweight JSON syntax colourer — no external deps.
+function syntaxHighlightJson(json: string): string {
+  return json
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(
+      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+      (match) => {
+        if (/^"/.test(match)) {
+          if (/:$/.test(match)) return `<span class="jk">${match}</span>`; // key
+          return `<span class="js">${match}</span>`; // string value
+        }
+        if (/true|false/.test(match)) return `<span class="jb">${match}</span>`; // boolean
+        if (/null/.test(match)) return `<span class="jb">${match}</span>`; // null
+        return `<span class="jn">${match}</span>`; // number
+      }
+    );
 }
 
 function formatUvInfo(

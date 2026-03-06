@@ -98,23 +98,71 @@
         top: 14px;
         right: 14px;
         z-index: 120;
-        width: 320px;
+        width: 340px;
         max-height: calc(100vh - 28px);
-        overflow: auto;
-        padding: 12px;
+        overflow: hidden;
+        display: none;
+        flex-direction: column;
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.2);
-        background: rgba(8, 11, 18, 0.92);
+        background: rgba(8, 11, 18, 0.95);
         color: #e6edff;
         font-size: 12px;
-        display: none;
       }
-      #poly-popup.visible { display: block; }
-      #poly-popup h3 {
-        margin: 0 0 8px;
+      #poly-popup.visible { display: flex; }
+      #poly-popup-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 12px 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        flex-shrink: 0;
+      }
+      #poly-popup-title {
         font-size: 13px;
+        font-weight: bold;
         color: #cfe0ff;
+        flex: 1;
       }
+      #poly-id-badge {
+        font-size: 11px;
+        font-family: monospace;
+        background: rgba(80,120,220,0.25);
+        border: 1px solid rgba(100,150,255,0.35);
+        border-radius: 4px;
+        padding: 2px 7px;
+        color: #a8c4ff;
+        cursor: default;
+        user-select: text;
+      }
+      .poly-tab-bar {
+        display: flex;
+        flex-shrink: 0;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+      }
+      .poly-tab {
+        flex: 1;
+        padding: 5px 0;
+        font-size: 11px;
+        text-align: center;
+        cursor: pointer;
+        color: #8090b0;
+        background: none;
+        border: none;
+        letter-spacing: 0.04em;
+        transition: color 0.15s, background 0.15s;
+      }
+      .poly-tab:hover { color: #c8dcff; background: rgba(255,255,255,0.04); }
+      .poly-tab.active { color: #cfe0ff; border-bottom: 2px solid #5080d0; }
+      #poly-panels {
+        flex: 1;
+        overflow: auto;
+        padding: 10px 12px 8px;
+      }
+      #poly-panel-summary { display: block; }
+      #poly-panel-json    { display: none; }
+      #poly-panel-summary.active { display: block; }
+      #poly-panel-json.active    { display: block; }
       .poly-row { margin: 3px 0; }
       .poly-key { color: #8ca2cf; }
       #poly-preview {
@@ -124,10 +172,25 @@
         background: rgba(0,0,0,0.4);
         image-rendering: pixelated;
       }
+      #poly-json-pre {
+        margin: 0;
+        font-size: 11px;
+        font-family: 'Courier New', monospace;
+        line-height: 1.5;
+        white-space: pre;
+        color: #c8d8ff;
+        tab-size: 2;
+      }
+      #poly-json-pre .jk { color: #8ca2cf; }
+      #poly-json-pre .jn { color: #f0a060; }
+      #poly-json-pre .js { color: #80d090; }
+      #poly-json-pre .jb { color: #e060a0; }
       .poly-hint {
-        margin-top: 8px;
+        padding: 6px 12px 8px;
         font-size: 11px;
         color: #8699bf;
+        border-top: 1px solid rgba(255,255,255,0.08);
+        flex-shrink: 0;
       }
     </style>
   </head>
@@ -157,10 +220,24 @@
     </div>
 
     <div id="poly-popup">
-      <h3>Polygon Inspector</h3>
-      <div id="poly-content"></div>
-      <canvas id="poly-preview"></canvas>
-      <div class="poly-hint">Click another triangle to update. Press Esc to hide.</div>
+      <div id="poly-popup-header">
+        <span id="poly-popup-title">Polygon Inspector</span>
+        <span id="poly-id-badge">—</span>
+      </div>
+      <div class="poly-tab-bar">
+        <button class="poly-tab active" id="poly-tab-summary">Summary</button>
+        <button class="poly-tab"        id="poly-tab-json">JSON</button>
+      </div>
+      <div id="poly-panels">
+        <div id="poly-panel-summary" class="active">
+          <div id="poly-content"></div>
+          <canvas id="poly-preview"></canvas>
+        </div>
+        <div id="poly-panel-json">
+          <pre id="poly-json-pre"></pre>
+        </div>
+      </div>
+      <div class="poly-hint">Click triangle to update · Esc to hide</div>
     </div>
     <script type="module" src="./src/main.ts"></script>
   </body>
