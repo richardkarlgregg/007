@@ -270,6 +270,8 @@ async function bootstrap(): Promise<void> {
     shadowFar: number;
     shadowBias: number;
     shadowNormalBias: number;
+    flareEnabled: boolean;
+    flareIntensity: number;
     showHelpers: boolean;
   }
 
@@ -295,6 +297,8 @@ async function bootstrap(): Promise<void> {
       shadowFar: 9000,
       shadowBias: -0.00030,
       shadowNormalBias: 0.55,
+      flareEnabled: true,
+      flareIntensity: 1.0,
       showHelpers: false
     },
     dawn: {
@@ -316,6 +320,8 @@ async function bootstrap(): Promise<void> {
       shadowFar: 9500,
       shadowBias: -0.00035,
       shadowNormalBias: 0.65,
+      flareEnabled: true,
+      flareIntensity: 0.9,
       showHelpers: false
     },
     overcast: {
@@ -337,6 +343,8 @@ async function bootstrap(): Promise<void> {
       shadowFar: 9000,
       shadowBias: -0.00025,
       shadowNormalBias: 0.45,
+      flareEnabled: true,
+      flareIntensity: 0.55,
       showHelpers: false
     }
   };
@@ -388,6 +396,103 @@ async function bootstrap(): Promise<void> {
     shadowHelper.visible = remasterLighting.showHelpers;
   }
 
+  function makeFlareTexture(stops: Array<{ offset: number; color: string }>, size = 256): THREE.Texture {
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      const fallback = new THREE.Texture();
+      fallback.needsUpdate = true;
+      return fallback;
+    }
+    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    for (const s of stops) g.addColorStop(s.offset, s.color);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  const flareRootTex = makeFlareTexture([
+    { offset: 0.0, color: "rgba(255,250,210,1.0)" },
+    { offset: 0.2, color: "rgba(255,232,170,0.9)" },
+    { offset: 0.5, color: "rgba(255,200,120,0.45)" },
+    { offset: 1.0, color: "rgba(255,170,90,0.0)" }
+  ]);
+  const flareGhostTex = makeFlareTexture([
+    { offset: 0.0, color: "rgba(175,210,255,0.85)" },
+    { offset: 0.55, color: "rgba(140,180,255,0.22)" },
+    { offset: 1.0, color: "rgba(140,180,255,0.0)" }
+  ]);
+
+  function createFlareSprite(tex: THREE.Texture, size: number): THREE.Sprite {
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(size, size, 1);
+    sprite.renderOrder = 999;
+    return sprite;
+  }
+
+  const sunFlareGroup = new THREE.Group();
+  sunFlareGroup.name = "sun-flare";
+  sunFlareGroup.visible = false;
+  scene.add(sunFlareGroup);
+
+  const flareCore = createFlareSprite(flareRootTex, 760);
+  const flareHalo = createFlareSprite(flareRootTex, 1600);
+  const flareGhostA = createFlareSprite(flareGhostTex, 360);
+  const flareGhostB = createFlareSprite(flareGhostTex, 230);
+  const flareGhostC = createFlareSprite(flareGhostTex, 140);
+  sunFlareGroup.add(flareCore, flareHalo, flareGhostA, flareGhostB, flareGhostC);
+
+  function setFlareOpacity(scale: number): void {
+    (flareCore.material as THREE.SpriteMaterial).opacity = 0.72 * scale;
+    (flareHalo.material as THREE.SpriteMaterial).opacity = 0.26 * scale;
+    (flareGhostA.material as THREE.SpriteMaterial).opacity = 0.22 * scale;
+    (flareGhostB.material as THREE.SpriteMaterial).opacity = 0.17 * scale;
+    (flareGhostC.material as THREE.SpriteMaterial).opacity = 0.12 * scale;
+  }
+
+  function updateSunFlare(): void {
+    if (!sunFlareGroup.visible) return;
+    const target = directional.target.position;
+    const sunDir = directional.position.clone().sub(target).normalize();
+    const sunWorld = camera.position.clone().addScaledVector(sunDir, 8500);
+    const sunNdc = sunWorld.clone().project(camera);
+
+    const inFront = sunNdc.z > -1 && sunNdc.z < 1;
+    const onScreen = Math.abs(sunNdc.x) <= 1.35 && Math.abs(sunNdc.y) <= 1.35;
+    if (!inFront || !onScreen) {
+      setFlareOpacity(0);
+      return;
+    }
+
+    const edgeFade = 1.0 - clamp(Math.max(Math.abs(sunNdc.x), Math.abs(sunNdc.y)), 0.0, 1.0);
+    const intensity = clamp(edgeFade * remasterLighting.flareIntensity, 0.0, 2.5);
+    setFlareOpacity(intensity);
+
+    flareCore.position.copy(sunWorld);
+    flareHalo.position.copy(sunWorld);
+
+    const placeGhost = (sprite: THREE.Sprite, t: number): void => {
+      const p = new THREE.Vector3(sunNdc.x * (1 - 2 * t), sunNdc.y * (1 - 2 * t), sunNdc.z);
+      p.unproject(camera);
+      sprite.position.copy(p);
+    };
+    placeGhost(flareGhostA, 0.25);
+    placeGhost(flareGhostB, 0.55);
+    placeGhost(flareGhostC, 0.82);
+  }
+
   function setSceneShadowFlags(enabled: boolean): void {
     scene.traverse((node) => {
       if (!(node instanceof THREE.Mesh)) return;
@@ -412,6 +517,7 @@ async function bootstrap(): Promise<void> {
       directional.castShadow = remasterLighting.shadowEnabled;
       fill.castShadow = false;
       setSceneShadowFlags(remasterLighting.shadowEnabled);
+      sunFlareGroup.visible = remasterLighting.flareEnabled;
       applySunPositionFromConfig();
       applyShadowSettingsFromConfig();
     } else {
@@ -422,6 +528,7 @@ async function bootstrap(): Promise<void> {
       directional.castShadow = false;
       fill.castShadow = false;
       setSceneShadowFlags(false);
+      sunFlareGroup.visible = false;
     }
 
     applyHelpersVisibility();
@@ -531,6 +638,8 @@ async function bootstrap(): Promise<void> {
   const lightShadowFar = document.getElementById("light-shadow-far") as HTMLInputElement | null;
   const lightShadowBias = document.getElementById("light-shadow-bias") as HTMLInputElement | null;
   const lightShadowNormalBias = document.getElementById("light-shadow-normal-bias") as HTMLInputElement | null;
+  const lightFlareEnabled = document.getElementById("light-flare-enabled") as HTMLInputElement | null;
+  const lightFlareIntensity = document.getElementById("light-flare-intensity") as HTMLInputElement | null;
   const lightShowHelpers = document.getElementById("light-show-helpers") as HTMLInputElement | null;
 
   function syncLightingUiFromConfig(): void {
@@ -553,6 +662,8 @@ async function bootstrap(): Promise<void> {
     if (lightShadowFar) lightShadowFar.value = remasterLighting.shadowFar.toFixed(0);
     if (lightShadowBias) lightShadowBias.value = remasterLighting.shadowBias.toFixed(5);
     if (lightShadowNormalBias) lightShadowNormalBias.value = remasterLighting.shadowNormalBias.toFixed(2);
+    if (lightFlareEnabled) lightFlareEnabled.checked = remasterLighting.flareEnabled;
+    if (lightFlareIntensity) lightFlareIntensity.value = remasterLighting.flareIntensity.toFixed(2);
     if (lightShowHelpers) lightShowHelpers.checked = remasterLighting.showHelpers;
   }
 
@@ -627,6 +738,8 @@ async function bootstrap(): Promise<void> {
     remasterLighting.shadowFar = clamp(num(lightShadowFar, remasterLighting.shadowFar), remasterLighting.shadowNear + 1.0, 30000.0);
     remasterLighting.shadowBias = clamp(num(lightShadowBias, remasterLighting.shadowBias), -0.01, 0.01);
     remasterLighting.shadowNormalBias = clamp(num(lightShadowNormalBias, remasterLighting.shadowNormalBias), 0.0, 3.0);
+    remasterLighting.flareEnabled = Boolean(lightFlareEnabled?.checked);
+    remasterLighting.flareIntensity = clamp(num(lightFlareIntensity, remasterLighting.flareIntensity), 0.0, 2.5);
     remasterLighting.showHelpers = Boolean(lightShowHelpers?.checked);
   }
 
@@ -658,13 +771,14 @@ async function bootstrap(): Promise<void> {
   setupSliderForInput(lightShadowFar, 10.0, 30000.0, 10.0);
   setupSliderForInput(lightShadowBias, -0.01, 0.01, 0.00005);
   setupSliderForInput(lightShadowNormalBias, 0.0, 3.0, 0.01);
+  setupSliderForInput(lightFlareIntensity, 0.0, 2.5, 0.01);
 
   syncLightingUiFromConfig();
   const uiInputs: Array<HTMLInputElement | HTMLSelectElement | null> = [
     lightExposure, lightHemi, lightSunIntensity, lightFill, lightAmbient,
     lightSunAzimuth, lightSunElevation, lightSunDistance, lightTargetX, lightTargetY, lightTargetZ,
     lightShadowsEnabled, lightShadowSize, lightShadowRadius, lightShadowNear, lightShadowFar,
-    lightShadowBias, lightShadowNormalBias, lightShowHelpers
+    lightShadowBias, lightShadowNormalBias, lightFlareEnabled, lightFlareIntensity, lightShowHelpers
   ];
   uiInputs.forEach((el) => {
     if (!el) return;
@@ -901,6 +1015,7 @@ async function bootstrap(): Promise<void> {
         camera.position.add(move);
       }
     }
+    updateSunFlare();
     renderer.render(scene, camera);
     requestAnimationFrame(animate);
   };
