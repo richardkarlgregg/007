@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
     <title>GoldenEye Three.js Viewer</title>
     <style>
       html,
@@ -222,6 +223,77 @@
         border-top: 1px solid rgba(255,255,255,0.08);
         flex-shrink: 0;
       }
+
+      #lighting-panel {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        width: 340px;
+        max-height: 62vh;
+        overflow: auto;
+        z-index: 130;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(8, 11, 18, 0.92);
+        color: #d8e4ff;
+        padding: 10px 12px;
+        box-sizing: border-box;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      #lighting-panel.hidden { display: none; }
+      #lighting-panel h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        letter-spacing: 0.03em;
+        color: #cfe0ff;
+      }
+      .light-row {
+        display: grid;
+        grid-template-columns: 1fr 180px;
+        align-items: center;
+        gap: 8px;
+        margin: 5px 0;
+      }
+      .light-row label { color: #9fb3da; }
+      .light-row input,
+      .light-row select,
+      .light-row button {
+        width: 100%;
+        box-sizing: border-box;
+        background: rgba(255,255,255,0.06);
+        color: #e6edff;
+        border: 1px solid rgba(255,255,255,0.18);
+        border-radius: 4px;
+        padding: 3px 6px;
+        font-size: 12px;
+      }
+      .light-row input[type="checkbox"] {
+        width: auto;
+        justify-self: start;
+        transform: translateY(1px);
+      }
+      .light-row button { cursor: pointer; }
+      .light-dual {
+        display: grid;
+        grid-template-columns: 1fr 64px;
+        gap: 6px;
+        align-items: center;
+      }
+      .light-dual input[type="range"] {
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        accent-color: #7ea8ff;
+      }
+      .light-subhead {
+        margin-top: 10px;
+        margin-bottom: 4px;
+        font-size: 11px;
+        color: #7f96c2;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
     </style>
   </head>
   <body>
@@ -239,6 +311,8 @@
       9: room labels<br />
       R: toggle remaster (PBR)<br />
       G: fog (hazy / gameplay / off)<br />
+      L: lighting panel<br />
+      H: light helpers<br />
       WASD / Arrows: fly camera<br />
       F / click: enter fly mode<br />
       Esc: exit fly mode<br />
@@ -277,6 +351,56 @@
         </div>
       </div>
       <div class="poly-hint">Click triangle to update · Esc to hide</div>
+    </div>
+
+    <div id="lighting-panel" class="hidden">
+      <h3>Remaster Lighting</h3>
+
+      <div class="light-row">
+        <label for="light-preset">preset</label>
+        <select id="light-preset">
+          <option value="midday">midday sun</option>
+          <option value="dawn">dawn warm</option>
+          <option value="overcast">overcast soft</option>
+        </select>
+      </div>
+      <div class="light-row">
+        <label>apply preset</label>
+        <button id="light-apply-preset">apply</button>
+      </div>
+
+      <div class="light-subhead">Tone + Intensities</div>
+      <div class="light-row"><label for="light-exposure">exposure</label><input id="light-exposure" type="number" step="0.01" /></div>
+      <div class="light-row"><label for="light-hemi">hemi intensity</label><input id="light-hemi" type="number" step="0.05" /></div>
+      <div class="light-row"><label for="light-sun-intensity">sun intensity</label><input id="light-sun-intensity" type="number" step="0.05" /></div>
+      <div class="light-row"><label for="light-fill">fill intensity</label><input id="light-fill" type="number" step="0.05" /></div>
+      <div class="light-row"><label for="light-ambient">ambient intensity</label><input id="light-ambient" type="number" step="0.05" /></div>
+
+      <div class="light-subhead">Sun Position</div>
+      <div class="light-row"><label for="light-sun-azimuth">sun azimuth deg</label><input id="light-sun-azimuth" type="number" step="1" /></div>
+      <div class="light-row"><label for="light-sun-elevation">sun elevation deg</label><input id="light-sun-elevation" type="number" step="1" /></div>
+      <div class="light-row"><label for="light-sun-distance">sun distance</label><input id="light-sun-distance" type="number" step="10" /></div>
+      <div class="light-row"><label for="light-target-x">target x</label><input id="light-target-x" type="number" step="10" /></div>
+      <div class="light-row"><label for="light-target-y">target y</label><input id="light-target-y" type="number" step="10" /></div>
+      <div class="light-row"><label for="light-target-z">target z</label><input id="light-target-z" type="number" step="10" /></div>
+
+      <div class="light-subhead">Shadows</div>
+      <div class="light-row"><label for="light-shadows-enabled">enable shadows</label><input id="light-shadows-enabled" type="checkbox" /></div>
+      <div class="light-row">
+        <label for="light-shadow-size">shadow map size</label>
+        <select id="light-shadow-size">
+          <option value="512">512</option>
+          <option value="1024">1024</option>
+          <option value="2048">2048</option>
+          <option value="4096">4096</option>
+        </select>
+      </div>
+      <div class="light-row"><label for="light-shadow-radius">shadow radius</label><input id="light-shadow-radius" type="number" step="10" /></div>
+      <div class="light-row"><label for="light-shadow-near">shadow near</label><input id="light-shadow-near" type="number" step="1" /></div>
+      <div class="light-row"><label for="light-shadow-far">shadow far</label><input id="light-shadow-far" type="number" step="10" /></div>
+      <div class="light-row"><label for="light-shadow-bias">shadow bias</label><input id="light-shadow-bias" type="number" step="0.00005" /></div>
+      <div class="light-row"><label for="light-shadow-normal-bias">shadow normalBias</label><input id="light-shadow-normal-bias" type="number" step="0.01" /></div>
+      <div class="light-row"><label for="light-show-helpers">show helpers</label><input id="light-show-helpers" type="checkbox" /></div>
     </div>
     <script type="module" src="./src/main.ts"></script>
   </body>

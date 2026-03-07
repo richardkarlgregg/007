@@ -13,13 +13,37 @@
     {
       "name": "snow_cliff",
       "_comment": "Replace cliff / mountain polygon textures with hi-res PBR maps.  Fill in the materialIds array after inspecting the triangles you want to upgrade.",
-      "materialIds": [950,949],
+      "materialIds": [949],
       "albedo":    "snow_cliff_albedo.png",
       "normal":    "snow_cliff_normal.png",
       "roughness": "snow_cliff_roughness.png",
       "ao":        "snow_cliff_ao.png",
       "metallic":  "snow_cliff_metallic.png",
       "height":    "snow_cliff_height.png",
+      "heightScale": 0
+    },
+    {
+      "name": "snow_cliff_realistic",
+      "_comment": "Alternative realistic cliff set. Use the same material IDs as snow_cliff unless you want a split assignment.",
+      "materialIds": [950],
+      "albedo":    "snow_cliff_realistic_albedo.png",
+      "normal":    "snow_cliff_realistic_normal.png",
+      "roughness": "snow_cliff_realistic_roughness.png",
+      "ao":        "snow_cliff_realistic_ao.png",
+      "metallic":  "snow_cliff_realistic_metallic.png",
+      "height":    "snow_cliff_realistic_height.png",
+      "heightScale": 0
+    },
+    {
+      "name": "snow_seamless",
+      "_comment": "Seamless snow surface set. Fill in materialIds from poly inspector for runway/ground snow polygons.",
+      "materialIds": [1268],
+      "albedo":    "snow_seamless_albedo.png",
+      "normal":    "snow_seamless_normal.png",
+      "roughness": "snow_seamless_roughness.png",
+      "ao":        "snow_seamless_ao.png",
+      "metallic":  "snow_seamless_metallic.png",
+      "height":    "snow_seamless_height.png",
       "heightScale": 0
     }
   ]

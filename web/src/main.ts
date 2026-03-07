@@ -1,9 +1,9 @@
 import * as THREE from "three";
-import { buildBgMesh, buildBgMeshWithAtlas, buildPbrOverrideMeshes, buildPadsLayer, buildPortalsLayer, buildRoomLabelsLayer, buildStanMesh, makeFogUniforms } from "./viewer/DebugLayers";
+import { buildBgMesh, buildBgMeshWithAtlas, buildPbrOverrideMeshes, buildRemasterPlaceholderMeshes, buildPadsLayer, buildPortalsLayer, buildRoomLabelsLayer, buildStanMesh, makeFogUniforms } from "./viewer/DebugLayers";
 import type { FogUniforms } from "./viewer/DebugLayers";
 import { loadStageData } from "./viewer/StageLoader";
 import type { AtlasManifest, RoomTriangle } from "./viewer/StageLoader";
-import { loadOverrides } from "./viewer/OverrideLoader";
+import { collectOverriddenIds, loadOverrides } from "./viewer/OverrideLoader";
 
 async function bootstrap(): Promise<void> {
   const root = document.getElementById("app");
@@ -108,6 +108,10 @@ async function bootstrap(): Promise<void> {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.shadowMap.enabled = false;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   root.appendChild(renderer.domElement);
 
   // ── Pointer-lock free-fly ────────────────────────────────────────────────
@@ -137,21 +141,44 @@ async function bootstrap(): Promise<void> {
     camera.rotation.x = pitch;
   });
 
-  // The atlas ShaderMaterial uses pre-baked N64 vertex colours and is completely
-  // immune to scene lights, so these lights only affect MeshStandardMaterial
-  // objects (PBR overrides, stan mesh).  They are intentionally brighter than
-  // a typical outdoor rig so the remaster materials match the N64 brightness.
-  const hemi = new THREE.HemisphereLight(0xdce8ff, 0x303040, 2.5);
+  // Lighting rigs:
+  // - "n64" mode keeps scene lighting subdued so atlas/vertex-shaded rendering
+  //   remains the visual baseline.
+  // - "remaster" mode enables stronger physically-based lighting + shadows.
+  // Atlas ShaderMaterial remains driven by its own vertex shade math either way.
+  const ambient = new THREE.AmbientLight(0xffffff, 0.0);
+  scene.add(ambient);
+
+  const hemi = new THREE.HemisphereLight(0xdce8ff, 0x303040, 0.25);
   scene.add(hemi);
 
-  const directional = new THREE.DirectionalLight(0xfff4e0, 2.5);
-  directional.position.set(400, 1000, -200);
+  const directional = new THREE.DirectionalLight(0xfff4e0, 0.3);
+  directional.position.set(1700, 2300, -900);
+  directional.castShadow = false;
+  directional.shadow.mapSize.set(4096, 4096);
+  directional.shadow.camera.near = 50;
+  directional.shadow.camera.far = 9000;
+  directional.shadow.camera.left = -3000;
+  directional.shadow.camera.right = 3000;
+  directional.shadow.camera.top = 2500;
+  directional.shadow.camera.bottom = -2500;
+  directional.shadow.bias = -0.0003;
+  directional.shadow.normalBias = 0.55;
+  directional.target.position.set(900, 0, -1400);
+  scene.add(directional.target);
   scene.add(directional);
 
-  // Fill light from the opposite side to soften deep shadows on PBR surfaces.
-  const fill = new THREE.DirectionalLight(0xb0c8ff, 0.8);
-  fill.position.set(-400, 400, 200);
+  // Fill light from the opposite side to soften shadow contrast.
+  const fill = new THREE.DirectionalLight(0xb0c8ff, 0.1);
+  fill.position.set(-900, 700, 500);
   scene.add(fill);
+
+  const sunHelper = new THREE.DirectionalLightHelper(directional, 180, 0xffddaa);
+  sunHelper.visible = false;
+  scene.add(sunHelper);
+  const shadowHelper = new THREE.CameraHelper(directional.shadow.camera);
+  shadowHelper.visible = false;
+  scene.add(shadowHelper);
 
   const grid = new THREE.GridHelper(6000, 120, 0x3f4558, 0x202633);
   scene.add(grid);
@@ -170,7 +197,9 @@ async function bootstrap(): Promise<void> {
   // all entries have empty materialIds arrays (first-time setup).
   const overridesPath = `${import.meta.env.BASE_URL}data/stages/runway_overrides.json`;
   const pbr = await loadOverrides(overridesPath, import.meta.env.BASE_URL);
+  const overriddenIds = collectOverriddenIds(pbr);
   let pbrOverrideGroup: THREE.Group | null = null;
+  let remasterPlaceholderGroup: THREE.Group | null = null;
   // true = remaster PBR is shown (when available); can be toggled with R key.
   let pbrEnabled = true;
 
@@ -186,12 +215,224 @@ async function bootstrap(): Promise<void> {
       pbrOverrideGroup = buildPbrOverrideMeshes(stage.roomTriangles, stage.atlas, pbr);
       scene.add(pbrOverrideGroup);
     }
+    remasterPlaceholderGroup = buildRemasterPlaceholderMeshes(stage.roomTriangles, stage.atlas, overriddenIds);
+    scene.add(remasterPlaceholderGroup);
   }
 
   // Start in textured mode if atlas is available, otherwise flat colours.
   let useAtlas = atlasBgMesh !== null;
   let bgMesh: THREE.Object3D = useAtlas ? atlasBgMesh! : flatBgMesh;
   scene.add(bgMesh);
+
+  function hasRemasterLayers(): boolean {
+    const hasOverrides = Boolean(pbrOverrideGroup && pbrOverrideGroup.children.length > 0);
+    const hasPlaceholders = Boolean(remasterPlaceholderGroup && remasterPlaceholderGroup.children.length > 0);
+    return hasOverrides || hasPlaceholders;
+  }
+
+  function syncRemasterLayers(): void {
+    const showRemaster = Boolean(
+      hasRemasterLayers() &&
+      pbrEnabled &&
+      useAtlas &&
+      bgMesh.visible
+    );
+
+    if (atlasBgMesh) {
+      // Keep original atlas visible in atlas mode; remaster layers render on top.
+      // This avoids a blank scene if remaster layers fail or are still loading.
+      atlasBgMesh.visible = useAtlas && bgMesh.visible;
+    }
+    if (pbrOverrideGroup) pbrOverrideGroup.visible = showRemaster;
+    if (remasterPlaceholderGroup) remasterPlaceholderGroup.visible = showRemaster;
+  }
+  syncRemasterLayers();
+
+  type LightingMode = "n64" | "remaster";
+  let lightingMode: LightingMode | null = null;
+
+  interface RemasterLightingConfig {
+    exposure: number;
+    hemiIntensity: number;
+    sunIntensity: number;
+    fillIntensity: number;
+    ambientIntensity: number;
+    sunAzimuthDeg: number;
+    sunElevationDeg: number;
+    sunDistance: number;
+    targetX: number;
+    targetY: number;
+    targetZ: number;
+    shadowEnabled: boolean;
+    shadowMapSize: number;
+    shadowRadius: number;
+    shadowNear: number;
+    shadowFar: number;
+    shadowBias: number;
+    shadowNormalBias: number;
+    showHelpers: boolean;
+  }
+
+  type LightingPresetName = "midday" | "dawn" | "overcast";
+
+  const remasterPresets: Record<LightingPresetName, RemasterLightingConfig> = {
+    midday: {
+      exposure: 1.18,
+      hemiIntensity: 0.85,
+      sunIntensity: 2.55,
+      fillIntensity: 0.42,
+      ambientIntensity: 0.08,
+      sunAzimuthDeg: -28,
+      sunElevationDeg: 52,
+      sunDistance: 3300,
+      targetX: 900,
+      targetY: 0,
+      targetZ: -1400,
+      shadowEnabled: true,
+      shadowMapSize: 4096,
+      shadowRadius: 2800,
+      shadowNear: 50,
+      shadowFar: 9000,
+      shadowBias: -0.00030,
+      shadowNormalBias: 0.55,
+      showHelpers: false
+    },
+    dawn: {
+      exposure: 1.23,
+      hemiIntensity: 0.95,
+      sunIntensity: 2.25,
+      fillIntensity: 0.55,
+      ambientIntensity: 0.12,
+      sunAzimuthDeg: -70,
+      sunElevationDeg: 18,
+      sunDistance: 3500,
+      targetX: 900,
+      targetY: 0,
+      targetZ: -1400,
+      shadowEnabled: true,
+      shadowMapSize: 4096,
+      shadowRadius: 3000,
+      shadowNear: 30,
+      shadowFar: 9500,
+      shadowBias: -0.00035,
+      shadowNormalBias: 0.65,
+      showHelpers: false
+    },
+    overcast: {
+      exposure: 1.10,
+      hemiIntensity: 1.25,
+      sunIntensity: 1.15,
+      fillIntensity: 0.70,
+      ambientIntensity: 0.20,
+      sunAzimuthDeg: -40,
+      sunElevationDeg: 40,
+      sunDistance: 3200,
+      targetX: 900,
+      targetY: 0,
+      targetZ: -1400,
+      shadowEnabled: true,
+      shadowMapSize: 2048,
+      shadowRadius: 2800,
+      shadowNear: 50,
+      shadowFar: 9000,
+      shadowBias: -0.00025,
+      shadowNormalBias: 0.45,
+      showHelpers: false
+    }
+  };
+
+  const remasterLighting: RemasterLightingConfig = { ...remasterPresets.midday };
+
+  function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function applySunPositionFromConfig(): void {
+    const az = THREE.MathUtils.degToRad(remasterLighting.sunAzimuthDeg);
+    const el = THREE.MathUtils.degToRad(remasterLighting.sunElevationDeg);
+    const horiz = Math.cos(el) * remasterLighting.sunDistance;
+
+    directional.target.position.set(remasterLighting.targetX, remasterLighting.targetY, remasterLighting.targetZ);
+    directional.position.set(
+      remasterLighting.targetX + Math.cos(az) * horiz,
+      remasterLighting.targetY + Math.sin(el) * remasterLighting.sunDistance,
+      remasterLighting.targetZ + Math.sin(az) * horiz
+    );
+    directional.target.updateMatrixWorld();
+    sunHelper.update();
+  }
+
+  function applyShadowSettingsFromConfig(): void {
+    const mapSize = Number.isFinite(remasterLighting.shadowMapSize) ? remasterLighting.shadowMapSize : 2048;
+    directional.shadow.mapSize.set(mapSize, mapSize);
+    if (directional.shadow.map) {
+      directional.shadow.map.dispose();
+      directional.shadow.map = null;
+    }
+    directional.shadow.camera.near = Math.max(0.1, remasterLighting.shadowNear);
+    directional.shadow.camera.far = Math.max(remasterLighting.shadowNear + 1, remasterLighting.shadowFar);
+    const r = Math.max(100, remasterLighting.shadowRadius);
+    directional.shadow.camera.left = -r;
+    directional.shadow.camera.right = r;
+    directional.shadow.camera.top = r;
+    directional.shadow.camera.bottom = -r;
+    directional.shadow.bias = remasterLighting.shadowBias;
+    directional.shadow.normalBias = remasterLighting.shadowNormalBias;
+    directional.shadow.camera.updateProjectionMatrix();
+    directional.shadow.needsUpdate = true;
+    shadowHelper.update();
+  }
+
+  function applyHelpersVisibility(): void {
+    sunHelper.visible = remasterLighting.showHelpers;
+    shadowHelper.visible = remasterLighting.showHelpers;
+  }
+
+  function setSceneShadowFlags(enabled: boolean): void {
+    scene.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      node.castShadow = enabled;
+      node.receiveShadow = enabled;
+    });
+  }
+
+  function applyLightingMode(mode: LightingMode): void {
+    lightingMode = mode;
+    const remaster = mode === "remaster";
+
+    renderer.toneMapping = remaster ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+    renderer.toneMappingExposure = remaster ? remasterLighting.exposure : 1.0;
+    renderer.shadowMap.enabled = remaster && remasterLighting.shadowEnabled;
+
+    if (remaster) {
+      hemi.intensity = remasterLighting.hemiIntensity;
+      directional.intensity = remasterLighting.sunIntensity;
+      fill.intensity = remasterLighting.fillIntensity;
+      ambient.intensity = remasterLighting.ambientIntensity;
+      directional.castShadow = remasterLighting.shadowEnabled;
+      fill.castShadow = false;
+      setSceneShadowFlags(remasterLighting.shadowEnabled);
+      applySunPositionFromConfig();
+      applyShadowSettingsFromConfig();
+    } else {
+      hemi.intensity = 0.2;
+      directional.intensity = 0.3;
+      fill.intensity = 0.1;
+      ambient.intensity = 0.0;
+      directional.castShadow = false;
+      fill.castShadow = false;
+      setSceneShadowFlags(false);
+    }
+
+    applyHelpersVisibility();
+  }
+
+  function refreshLightingMode(): void {
+    // Remaster lighting is active only when PBR overrides are actually visible.
+    const remasterActive = Boolean(hasRemasterLayers() && pbrEnabled && useAtlas && bgMesh.visible);
+    applyLightingMode(remasterActive ? "remaster" : "n64");
+  }
+  refreshLightingMode();
 
   const stanMesh = buildStanMesh(stage.stanTiles);
   stanMesh.name = "stan";
@@ -209,6 +450,9 @@ async function bootstrap(): Promise<void> {
   const roomLabelsLayer = buildRoomLabelsLayer(stage.roomCenters);
   roomLabelsLayer.visible = false;
   scene.add(roomLabelsLayer);
+
+  // Re-apply after all scene meshes are attached so global shadow flags propagate.
+  refreshLightingMode();
 
   let wireframeEnabled = false;
   const movementKeys = {
@@ -263,6 +507,173 @@ async function bootstrap(): Promise<void> {
 
   atlasOverlay?.addEventListener("click", () => {
     atlasOverlay.classList.remove("visible");
+  });
+
+  // Lighting panel controls
+  const lightingPanel = document.getElementById("lighting-panel");
+  const lightPreset = document.getElementById("light-preset") as HTMLSelectElement | null;
+  const lightApplyPreset = document.getElementById("light-apply-preset") as HTMLButtonElement | null;
+  const lightExposure = document.getElementById("light-exposure") as HTMLInputElement | null;
+  const lightHemi = document.getElementById("light-hemi") as HTMLInputElement | null;
+  const lightSunIntensity = document.getElementById("light-sun-intensity") as HTMLInputElement | null;
+  const lightFill = document.getElementById("light-fill") as HTMLInputElement | null;
+  const lightAmbient = document.getElementById("light-ambient") as HTMLInputElement | null;
+  const lightSunAzimuth = document.getElementById("light-sun-azimuth") as HTMLInputElement | null;
+  const lightSunElevation = document.getElementById("light-sun-elevation") as HTMLInputElement | null;
+  const lightSunDistance = document.getElementById("light-sun-distance") as HTMLInputElement | null;
+  const lightTargetX = document.getElementById("light-target-x") as HTMLInputElement | null;
+  const lightTargetY = document.getElementById("light-target-y") as HTMLInputElement | null;
+  const lightTargetZ = document.getElementById("light-target-z") as HTMLInputElement | null;
+  const lightShadowsEnabled = document.getElementById("light-shadows-enabled") as HTMLInputElement | null;
+  const lightShadowSize = document.getElementById("light-shadow-size") as HTMLSelectElement | null;
+  const lightShadowRadius = document.getElementById("light-shadow-radius") as HTMLInputElement | null;
+  const lightShadowNear = document.getElementById("light-shadow-near") as HTMLInputElement | null;
+  const lightShadowFar = document.getElementById("light-shadow-far") as HTMLInputElement | null;
+  const lightShadowBias = document.getElementById("light-shadow-bias") as HTMLInputElement | null;
+  const lightShadowNormalBias = document.getElementById("light-shadow-normal-bias") as HTMLInputElement | null;
+  const lightShowHelpers = document.getElementById("light-show-helpers") as HTMLInputElement | null;
+
+  function syncLightingUiFromConfig(): void {
+    if (!lightingPanel) return;
+    if (lightExposure) lightExposure.value = remasterLighting.exposure.toFixed(2);
+    if (lightHemi) lightHemi.value = remasterLighting.hemiIntensity.toFixed(2);
+    if (lightSunIntensity) lightSunIntensity.value = remasterLighting.sunIntensity.toFixed(2);
+    if (lightFill) lightFill.value = remasterLighting.fillIntensity.toFixed(2);
+    if (lightAmbient) lightAmbient.value = remasterLighting.ambientIntensity.toFixed(2);
+    if (lightSunAzimuth) lightSunAzimuth.value = remasterLighting.sunAzimuthDeg.toFixed(0);
+    if (lightSunElevation) lightSunElevation.value = remasterLighting.sunElevationDeg.toFixed(0);
+    if (lightSunDistance) lightSunDistance.value = remasterLighting.sunDistance.toFixed(0);
+    if (lightTargetX) lightTargetX.value = remasterLighting.targetX.toFixed(0);
+    if (lightTargetY) lightTargetY.value = remasterLighting.targetY.toFixed(0);
+    if (lightTargetZ) lightTargetZ.value = remasterLighting.targetZ.toFixed(0);
+    if (lightShadowsEnabled) lightShadowsEnabled.checked = remasterLighting.shadowEnabled;
+    if (lightShadowSize) lightShadowSize.value = String(remasterLighting.shadowMapSize);
+    if (lightShadowRadius) lightShadowRadius.value = remasterLighting.shadowRadius.toFixed(0);
+    if (lightShadowNear) lightShadowNear.value = remasterLighting.shadowNear.toFixed(0);
+    if (lightShadowFar) lightShadowFar.value = remasterLighting.shadowFar.toFixed(0);
+    if (lightShadowBias) lightShadowBias.value = remasterLighting.shadowBias.toFixed(5);
+    if (lightShadowNormalBias) lightShadowNormalBias.value = remasterLighting.shadowNormalBias.toFixed(2);
+    if (lightShowHelpers) lightShowHelpers.checked = remasterLighting.showHelpers;
+  }
+
+  function setupSliderForInput(
+    input: HTMLInputElement | null,
+    min: number,
+    max: number,
+    step: number
+  ): void {
+    if (!input || input.dataset.sliderBound === "1") return;
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    const parent = input.parentElement;
+    if (!parent) return;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "light-dual";
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = String(min);
+    slider.max = String(max);
+    slider.step = String(step);
+    slider.value = input.value || String(min);
+
+    input.parentElement?.insertBefore(wrapper, input);
+    wrapper.appendChild(slider);
+    wrapper.appendChild(input);
+
+    slider.addEventListener("input", () => {
+      input.value = slider.value;
+      applyLightingUi();
+    });
+    input.addEventListener("input", () => {
+      const num = Number.parseFloat(input.value);
+      if (Number.isFinite(num)) {
+        slider.value = String(clamp(num, min, max));
+      }
+    });
+    input.addEventListener("change", () => {
+      const num = Number.parseFloat(input.value);
+      if (Number.isFinite(num)) {
+        slider.value = String(clamp(num, min, max));
+      }
+    });
+
+    input.dataset.sliderBound = "1";
+  }
+
+  function readLightingUiToConfig(): void {
+    const num = (el: HTMLInputElement | null, fallback: number): number => {
+      if (!el) return fallback;
+      const parsed = Number.parseFloat(el.value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    remasterLighting.exposure = clamp(num(lightExposure, remasterLighting.exposure), 0.25, 3.5);
+    remasterLighting.hemiIntensity = clamp(num(lightHemi, remasterLighting.hemiIntensity), 0.0, 4.0);
+    remasterLighting.sunIntensity = clamp(num(lightSunIntensity, remasterLighting.sunIntensity), 0.0, 8.0);
+    remasterLighting.fillIntensity = clamp(num(lightFill, remasterLighting.fillIntensity), 0.0, 4.0);
+    remasterLighting.ambientIntensity = clamp(num(lightAmbient, remasterLighting.ambientIntensity), 0.0, 3.0);
+    remasterLighting.sunAzimuthDeg = num(lightSunAzimuth, remasterLighting.sunAzimuthDeg);
+    remasterLighting.sunElevationDeg = clamp(num(lightSunElevation, remasterLighting.sunElevationDeg), 1.0, 89.0);
+    remasterLighting.sunDistance = clamp(num(lightSunDistance, remasterLighting.sunDistance), 200.0, 10000.0);
+    remasterLighting.targetX = num(lightTargetX, remasterLighting.targetX);
+    remasterLighting.targetY = num(lightTargetY, remasterLighting.targetY);
+    remasterLighting.targetZ = num(lightTargetZ, remasterLighting.targetZ);
+    remasterLighting.shadowEnabled = Boolean(lightShadowsEnabled?.checked);
+    remasterLighting.shadowMapSize = Number.parseInt(lightShadowSize?.value ?? String(remasterLighting.shadowMapSize), 10) || remasterLighting.shadowMapSize;
+    remasterLighting.shadowRadius = clamp(num(lightShadowRadius, remasterLighting.shadowRadius), 100.0, 10000.0);
+    remasterLighting.shadowNear = clamp(num(lightShadowNear, remasterLighting.shadowNear), 0.1, 5000.0);
+    remasterLighting.shadowFar = clamp(num(lightShadowFar, remasterLighting.shadowFar), remasterLighting.shadowNear + 1.0, 30000.0);
+    remasterLighting.shadowBias = clamp(num(lightShadowBias, remasterLighting.shadowBias), -0.01, 0.01);
+    remasterLighting.shadowNormalBias = clamp(num(lightShadowNormalBias, remasterLighting.shadowNormalBias), 0.0, 3.0);
+    remasterLighting.showHelpers = Boolean(lightShowHelpers?.checked);
+  }
+
+  function applyLightingUi(): void {
+    readLightingUiToConfig();
+    syncLightingUiFromConfig();
+    refreshLightingMode();
+  }
+
+  function applyRemasterPreset(presetName: LightingPresetName): void {
+    Object.assign(remasterLighting, remasterPresets[presetName]);
+    syncLightingUiFromConfig();
+    refreshLightingMode();
+  }
+
+  setupSliderForInput(lightExposure, 0.25, 3.5, 0.01);
+  setupSliderForInput(lightHemi, 0.0, 4.0, 0.01);
+  setupSliderForInput(lightSunIntensity, 0.0, 8.0, 0.01);
+  setupSliderForInput(lightFill, 0.0, 4.0, 0.01);
+  setupSliderForInput(lightAmbient, 0.0, 3.0, 0.01);
+  setupSliderForInput(lightSunAzimuth, -180.0, 180.0, 1.0);
+  setupSliderForInput(lightSunElevation, 1.0, 89.0, 1.0);
+  setupSliderForInput(lightSunDistance, 200.0, 10000.0, 10.0);
+  setupSliderForInput(lightTargetX, -10000.0, 10000.0, 10.0);
+  setupSliderForInput(lightTargetY, -10000.0, 10000.0, 10.0);
+  setupSliderForInput(lightTargetZ, -10000.0, 10000.0, 10.0);
+  setupSliderForInput(lightShadowRadius, 100.0, 10000.0, 10.0);
+  setupSliderForInput(lightShadowNear, 0.1, 5000.0, 1.0);
+  setupSliderForInput(lightShadowFar, 10.0, 30000.0, 10.0);
+  setupSliderForInput(lightShadowBias, -0.01, 0.01, 0.00005);
+  setupSliderForInput(lightShadowNormalBias, 0.0, 3.0, 0.01);
+
+  syncLightingUiFromConfig();
+  const uiInputs: Array<HTMLInputElement | HTMLSelectElement | null> = [
+    lightExposure, lightHemi, lightSunIntensity, lightFill, lightAmbient,
+    lightSunAzimuth, lightSunElevation, lightSunDistance, lightTargetX, lightTargetY, lightTargetZ,
+    lightShadowsEnabled, lightShadowSize, lightShadowRadius, lightShadowNear, lightShadowFar,
+    lightShadowBias, lightShadowNormalBias, lightShowHelpers
+  ];
+  uiInputs.forEach((el) => {
+    if (!el) return;
+    el.addEventListener("input", applyLightingUi);
+    el.addEventListener("change", applyLightingUi);
+  });
+  lightApplyPreset?.addEventListener("click", () => {
+    const selected = (lightPreset?.value ?? "midday") as LightingPresetName;
+    applyRemasterPreset(selected);
   });
 
   window.addEventListener("keydown", (event) => {
@@ -355,6 +766,7 @@ async function bootstrap(): Promise<void> {
     // Check both the main bg mesh and any visible PBR override geometry.
     const candidates: THREE.Object3D[] = [bgMesh];
     if (pbrOverrideGroup?.visible) candidates.push(pbrOverrideGroup);
+    if (remasterPlaceholderGroup?.visible) candidates.push(remasterPlaceholderGroup);
     const hits = candidates
       .flatMap((obj) => raycaster.intersectObject(obj, true))
       .sort((a, b) => a.distance - b.distance);
@@ -376,8 +788,8 @@ async function bootstrap(): Promise<void> {
   window.addEventListener("keydown", (event) => {
     if (event.key === "1") {
       bgMesh.visible = !bgMesh.visible;
-      // PBR overrides are only visible in atlas mode when remaster is enabled.
-      if (pbrOverrideGroup && useAtlas) pbrOverrideGroup.visible = bgMesh.visible && pbrEnabled;
+      syncRemasterLayers();
+      refreshLightingMode();
     } else if (event.key === "2") {
       stanMesh.visible = !stanMesh.visible;
     } else if (event.key === "3") {
@@ -430,21 +842,28 @@ async function bootstrap(): Promise<void> {
           scene.add(next);
         }
         bgMesh = next;
-        // PBR overrides are only meaningful in atlas mode and when enabled.
-        if (pbrOverrideGroup) pbrOverrideGroup.visible = useAtlas && wasVisible && pbrEnabled;
+        syncRemasterLayers();
+        refreshLightingMode();
       }
     } else if (event.key === "9") {
       roomLabelsLayer.visible = !roomLabelsLayer.visible;
     } else if (event.key === "r" || event.key === "R") {
       // Toggle remaster (PBR override) layer on/off.
-      if (pbrOverrideGroup) {
+      if (hasRemasterLayers()) {
         pbrEnabled = !pbrEnabled;
-        pbrOverrideGroup.visible = useAtlas && bgMesh.visible && pbrEnabled;
+        syncRemasterLayers();
+        refreshLightingMode();
       }
     } else if (event.key === "g" || event.key === "G") {
       // Cycle fog modes: hazy → gameplay → off → hazy …
       fogMode = fogMode === "hazy" ? "gameplay" : fogMode === "gameplay" ? "off" : "hazy";
       applyFog();
+    } else if (event.key === "l" || event.key === "L") {
+      lightingPanel?.classList.toggle("hidden");
+    } else if (event.key === "h" || event.key === "H") {
+      remasterLighting.showHelpers = !remasterLighting.showHelpers;
+      if (lightShowHelpers) lightShowHelpers.checked = remasterLighting.showHelpers;
+      applyHelpersVisibility();
     } else if (event.key === "f" || event.key === "F") {
       if (flyMode) document.exitPointerLock();
       else renderer.domElement.requestPointerLock();
@@ -453,6 +872,7 @@ async function bootstrap(): Promise<void> {
         document.exitPointerLock();
       } else {
         hidePolygonPopup();
+        lightingPanel?.classList.add("hidden");
       }
     }
   });

@@ -33,6 +33,18 @@
       "metallic":  "snow_cliff_realistic_metallic.png",
       "height":    "snow_cliff_realistic_height.png",
       "heightScale": 0
+    },
+    {
+      "name": "snow_seamless",
+      "_comment": "Seamless snow surface set. Fill in materialIds from poly inspector for runway/ground snow polygons.",
+      "materialIds": [1268],
+      "albedo":    "snow_seamless_albedo.png",
+      "normal":    "snow_seamless_normal.png",
+      "roughness": "snow_seamless_roughness.png",
+      "ao":        "snow_seamless_ao.png",
+      "metallic":  "snow_seamless_metallic.png",
+      "height":    "snow_seamless_height.png",
+      "heightScale": 0
     }
   ]
 }

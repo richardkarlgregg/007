@@ -135,6 +135,8 @@ export function buildBgMesh(triangles: RoomTriangle[]): THREE.Group {
 // each pixel independently.
 // ---------------------------------------------------------------------------
 const ATLAS_VERTEX_SHADER = /* glsl */ `
+  #include <common>
+  #include <shadowmap_pars_vertex>
   attribute float aMaterialId;
   attribute vec2  aTexelUV;
   attribute vec3  aVertexColor;
@@ -145,15 +147,19 @@ const ATLAS_VERTEX_SHADER = /* glsl */ `
   varying   float vWorldY;
 
   void main() {
+    vec3 transformed = vec3(position);
+
     vMaterialId  = aMaterialId;
     vTexelUV     = aTexelUV;
     vVertexColor = aVertexColor;
 
-    vec4 worldPos   = modelMatrix * vec4(position, 1.0);
+    vec4 worldPos   = modelMatrix * vec4(transformed, 1.0);
     vWorldY         = worldPos.y;
 
-    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);
     gl_Position = projectionMatrix * mvPosition;
+    #include <worldpos_vertex>
+    #include <shadowmap_vertex>
 
     // Eye-space depth (positive = in front of camera).
     vFogDepth = -mvPosition.z;
@@ -162,6 +168,10 @@ const ATLAS_VERTEX_SHADER = /* glsl */ `
 
 const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
+  #include <common>
+  #include <packing>
+  #include <shadowmap_pars_fragment>
+  #include <shadowmask_pars_fragment>
 
   uniform sampler2D uAtlas;
   // 1-D lookup texture: each texel i stores (x, y, w, h) in atlas pixels
@@ -222,6 +232,10 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
     // N64 SHADE * TEXEL0 combine: vertex shade modulates texture colour.
     vec3 rgb = shade * tex.rgb;
 
+    // Receive directional-light shadows in remaster mode.
+    float shadowMask = getShadowMask();
+    rgb *= mix(0.55, 1.0, shadowMask);
+
     // Distance fog — eye-space depth linear ramp.
     float distFog = clamp((vFogDepth - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
 
@@ -279,6 +293,7 @@ export function buildBgMeshWithAtlas(
   // Fog uniforms are passed in by reference — updating .value fields in the
   // caller automatically propagates to the GPU on the next render frame.
   const sharedUniforms = {
+    ...THREE.UniformsLib.lights,
     uAtlas:       { value: atlasTexture },
     uLookup:      { value: lookupTex },
     uAtlasSize:   { value: new THREE.Vector2(atlas.width, atlas.height) },
@@ -295,7 +310,8 @@ export function buildBgMeshWithAtlas(
     uniforms:       sharedUniforms,
     vertexShader:   ATLAS_VERTEX_SHADER,
     fragmentShader: ATLAS_FRAGMENT_SHADER,
-    side:           THREE.DoubleSide
+    side:           THREE.DoubleSide,
+    lights:         true
   });
 
   // Decal material — secondary-DL geometry with polygon offset (ZMODE_DECAL).
@@ -304,6 +320,7 @@ export function buildBgMeshWithAtlas(
     vertexShader:        ATLAS_VERTEX_SHADER,
     fragmentShader:      ATLAS_FRAGMENT_SHADER,
     side:                THREE.DoubleSide,
+    lights:              true,
     polygonOffset:       true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits:  -4
@@ -483,9 +500,119 @@ export function buildPbrOverrideMeshes(
     const mesh = new THREE.Mesh(geometry, mat);
     mesh.name = `pbr-override-${override.name}`;
     mesh.userData.triangleIds = allTriIds;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     group.add(mesh);
   }
 
+  return group;
+}
+
+let remasterPlaceholderTex: THREE.Texture | null = null;
+
+function getRemasterPlaceholderTexture(): THREE.Texture {
+  if (remasterPlaceholderTex) return remasterPlaceholderTex;
+
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const i = (y * size + x) * 4;
+      const checker = ((Math.floor(x / 8) + Math.floor(y / 8)) & 1) === 0;
+      const grid = (x % 8 === 0) || (y % 8 === 0);
+      const c = grid ? 112 : checker ? 172 : 148;
+      data[i + 0] = c;
+      data[i + 1] = c;
+      data[i + 2] = c;
+      data[i + 3] = 255;
+    }
+  }
+
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.needsUpdate = true;
+  remasterPlaceholderTex = tex;
+  return tex;
+}
+
+export function buildRemasterPlaceholderMeshes(
+  triangles: RoomTriangle[],
+  atlas: AtlasManifest,
+  overriddenIds: ReadonlySet<number>
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "bg-remaster-placeholders";
+
+  const primary = { pos: [] as number[], uvs: [] as number[], triIds: [] as number[] };
+  const secondary = { pos: [] as number[], uvs: [] as number[], triIds: [] as number[] };
+
+  triangles.forEach((tri, triId) => {
+    if (overriddenIds.has(tri.materialId)) return;
+    const item = atlas.items[String(tri.materialId)];
+    if (!item) return;
+
+    const target = tri.isSecondary ? secondary : primary;
+    const uw = item.width;
+    const uh = item.height;
+
+    target.pos.push(
+      tri.a.x, tri.a.y, tri.a.z,
+      tri.b.x, tri.b.y, tri.b.z,
+      tri.c.x, tri.c.y, tri.c.z
+    );
+    target.uvs.push(
+      (tri.uvA.u / 32.0) / uw, (tri.uvA.v / 32.0) / uh,
+      (tri.uvB.u / 32.0) / uw, (tri.uvB.v / 32.0) / uh,
+      (tri.uvC.u / 32.0) / uw, (tri.uvC.v / 32.0) / uh
+    );
+    target.triIds.push(triId);
+  });
+
+  const placeholderMap = getRemasterPlaceholderTexture();
+  const baseMat = new THREE.MeshStandardMaterial({
+    side: THREE.DoubleSide,
+    color: 0xf0f0f0,
+    map: placeholderMap,
+    metalness: 0.0,
+    roughness: 0.92
+  });
+  const decalMat = new THREE.MeshStandardMaterial({
+    side: THREE.DoubleSide,
+    color: 0xf0f0f0,
+    map: placeholderMap,
+    metalness: 0.0,
+    roughness: 0.92,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4
+  });
+
+  function addMesh(
+    buf: { pos: number[]; uvs: number[]; triIds: number[] },
+    mat: THREE.MeshStandardMaterial,
+    name: string
+  ): void {
+    if (buf.pos.length === 0) return;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(buf.pos, 3));
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(buf.uvs, 2));
+    geometry.setAttribute("uv2", new THREE.Float32BufferAttribute(buf.uvs, 2));
+    geometry.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(geometry, mat);
+    mesh.name = name;
+    mesh.userData.triangleIds = buf.triIds;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+
+  addMesh(primary, baseMat, "bg-remaster-placeholder-primary");
+  addMesh(secondary, decalMat, "bg-remaster-placeholder-secondary");
   return group;
 }
 
