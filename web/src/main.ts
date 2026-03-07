@@ -155,6 +155,7 @@ async function bootstrap(): Promise<void> {
 
   const grid = new THREE.GridHelper(6000, 120, 0x3f4558, 0x202633);
   scene.add(grid);
+  grid.visible = false;
 
   const stageDataPath = `${import.meta.env.BASE_URL}data/stages/runway.json`;
   const stage = await loadStageData(stageDataPath);
