@@ -1,4 +1,79 @@
 import { readFileSync } from "node:fs";
+/** Prop types that carry a valid pad reference in their second word. */
+const SPATIAL_PROP_TYPES = new Set([
+    "Guard",
+    "StandardProp",
+    "Door",
+    "AmmoBox",
+    "Collectable",
+    "Tank",
+    "SingleMonitor",
+    "Key",
+    "Drone",
+    "Glass",
+    "GlassWindow",
+]);
+/**
+ * Parse propItemModelFileRecord.inc.c to produce a 0-indexed array of
+ * { name, scale } entries matching PitemZ_entries[].
+ *
+ * Entries appear as:
+ *   #include <assets/obseg/prop/NAME/propFileRecord.inc.c>   (scale defaults to 0.1)
+ *   PROPFILERECORD(NAME, SCALE)
+ */
+export function parsePropModelEntries(path) {
+    const source = readFileSync(path, "utf8");
+    const entries = [];
+    for (const line of source.split("\n")) {
+        const inc = line.match(/#include\s+<assets\/obseg\/prop\/(\w+)\/propFileRecord\.inc\.c>/);
+        if (inc) {
+            // The included file uses PROPFILERECORD with scale=0.1 (macro default).
+            entries.push({ name: inc[1], scale: 0.1 });
+            continue;
+        }
+        // PROPFILERECORD(NAME, SCALE) — explicit scale (may differ from 0.1 for doors etc.)
+        const rec = line.match(/PROPFILERECORD\((\w+),\s*([\d.]+)\s*\)/);
+        if (rec) {
+            entries.push({ name: rec[1], scale: Number.parseFloat(rec[2]) });
+        }
+    }
+    return entries;
+}
+/**
+ * Parse propDefs[] from a setup C source file.
+ * Returns only entries whose type has a meaningful 3-D position (pad reference).
+ *
+ * Each propDef line has the format:
+ *   _mkword(extraScale, _mkshort(0, typeId)), _mkword(primaryIndex, padIndex), ...
+ * The extraScale is the PropDefHeaderRecord.extrascale field (u8.8 fixed-point).
+ */
+export function parseSetupPropdefs(path) {
+    const source = readFileSync(path, "utf8");
+    const propDefsBlock = source.match(/s32\s+propDefs\[\]\s*=\s*\{([\s\S]*?)\n\};/);
+    if (!propDefsBlock) {
+        throw new Error(`Could not find propDefs[] in ${path}`);
+    }
+    const block = propDefsBlock[1];
+    const results = [];
+    // Each data line begins with _mkword(EXTRASCALE, _mkshort(0, TYPEID)) followed
+    // by _mkword(PRIMARYINDEX, PADINDEX).  Capture all three integer arguments.
+    const entryRegex = /\/\* Type = (\w+); index = (\d+) \*\/[^\r\n]*[\r\n]+\s*_mkword\((\d+),\s*_mkshort\(0,\s*\d+\)\)\s*,\s*_mkword\((\d+),\s*(\d+)\)/g;
+    let match = null;
+    while ((match = entryRegex.exec(block)) !== null) {
+        const type = match[1];
+        if (!SPATIAL_PROP_TYPES.has(type))
+            continue;
+        const index = Number.parseInt(match[2], 10);
+        const extraScale = Number.parseInt(match[3], 10);
+        const primaryIndex = Number.parseInt(match[4], 10);
+        const padIndex = Number.parseInt(match[5], 10);
+        // Pad indices > 9999 are virtual pads (e.g. intro camera positions) — skip.
+        if (padIndex > 9999)
+            continue;
+        results.push({ index, type, padIndex, primaryIndex, extraScale });
+    }
+    return results;
+}
 const NUMBER = "[-+]?(?:\\d*\\.\\d+|\\d+)(?:e[-+]?\\d+)?";
 function parseFloatNumber(input) {
     return Number.parseFloat(input);

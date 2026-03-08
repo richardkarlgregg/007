@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { buildBgMesh, buildBgMeshWithAtlas, buildPbrOverrideMeshes, buildRemasterPlaceholderMeshes, buildPadsLayer, buildPortalsLayer, buildRoomLabelsLayer, buildStanMesh, makeFogUniforms } from "./viewer/DebugLayers";
+import { buildBgMesh, buildBgMeshWithAtlas, buildPbrOverrideMeshes, buildRemasterPlaceholderMeshes, buildPadsLayer, buildPortalsLayer, buildPropsLayer, buildRoomLabelsLayer, buildStanMesh, makeFogUniforms } from "./viewer/DebugLayers";
 import type { FogUniforms } from "./viewer/DebugLayers";
 import { loadStageData } from "./viewer/StageLoader";
 import type { AtlasManifest, RoomTriangle } from "./viewer/StageLoader";
@@ -562,6 +562,19 @@ async function bootstrap(): Promise<void> {
   portalsLayer.visible = false;
   scene.add(portalsLayer);
 
+  let propsLayer: ReturnType<typeof buildPropsLayer> | null = null;
+  if (stage.propPlacements && stage.propPlacements.length > 0) {
+    propsLayer = buildPropsLayer(
+      stage.propPlacements,
+      stage.pads,
+      stage.propModelNames ?? [],
+      { showLabels: false },
+      stage.propModels ?? {}
+    );
+    propsLayer.visible = false;
+    scene.add(propsLayer);
+  }
+
   const roomLabelsLayer = buildRoomLabelsLayer(stage.roomCenters);
   roomLabelsLayer.visible = false;
   scene.add(roomLabelsLayer);
@@ -949,6 +962,8 @@ async function bootstrap(): Promise<void> {
       });
     } else if (event.key === "6") {
       grid.visible = !grid.visible;
+    } else if (event.key === "0") {
+      if (propsLayer) propsLayer.visible = !propsLayer.visible;
     } else if (event.key === "7") {
       toggleAtlasViewer();
     } else if (event.key === "8") {

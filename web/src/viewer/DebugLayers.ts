@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { AtlasManifest, PadRecord, Portal, RoomTriangle, StanTile } from "./StageLoader";
+import type { AtlasManifest, PadRecord, Portal, PropModelGeometry, PropPlacement, RoomTriangle, StanTile } from "./StageLoader";
 import type { LoadedOverride } from "./OverrideLoader";
 
 // ---------------------------------------------------------------------------
@@ -712,6 +712,210 @@ export function buildPortalsLayer(portals: Portal[]): THREE.Group {
     points.push(points[0].clone());
     const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
     group.add(new THREE.Line(lineGeometry, lineMaterial));
+  }
+
+  return group;
+}
+
+// ---------------------------------------------------------------------------
+// Props layer — color-coded 3-D markers for map object placements.
+// ---------------------------------------------------------------------------
+
+/** Per-type visual configuration: mesh geometry + colour + vertical size. */
+const PROP_TYPE_STYLE: Record<string, { color: number; geo: "box" | "sphere" | "cylinder"; h: number }> = {
+  Guard:         { color: 0xff3030, geo: "cylinder", h: 80 },
+  StandardProp:  { color: 0xd4c27a, geo: "box",      h: 30 },
+  Door:          { color: 0x4488ff, geo: "box",       h: 90 },
+  AmmoBox:       { color: 0xff8800, geo: "box",       h: 24 },
+  Collectable:   { color: 0xffee00, geo: "sphere",    h: 20 },
+  Tank:          { color: 0x446644, geo: "box",       h: 60 },
+  SingleMonitor: { color: 0x00cccc, geo: "box",       h: 40 },
+  Key:           { color: 0xffd700, geo: "sphere",    h: 16 },
+  Drone:         { color: 0xcc44ff, geo: "sphere",    h: 22 },
+  Glass:         { color: 0x88ddff, geo: "box",       h: 60 },
+  GlassWindow:   { color: 0x88ddff, geo: "box",       h: 60 },
+};
+
+const DEFAULT_PROP_STYLE = { color: 0xaaaaaa, geo: "box" as const, h: 30 };
+
+/**
+ * Build a label sprite for a prop marker so viewers can identify it on hover /
+ * without needing tooltips.  Returns a small canvas-texture Sprite.
+ */
+function makePropLabelSprite(label: string, color: number): THREE.Sprite {
+  const W = 320, H = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d")!;
+
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.beginPath();
+  ctx.roundRect(2, 2, W - 4, H - 4, 8);
+  ctx.fill();
+
+  const hex = `#${color.toString(16).padStart(6, "0")}`;
+  ctx.fillStyle = hex;
+  ctx.font = "bold 22px 'Courier New', monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, W / 2, H / 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: true });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(140, 28, 1);
+  return sprite;
+}
+
+export interface PropLayerOptions {
+  /** When true, draw a small name label above each marker. Default false. */
+  showLabels?: boolean;
+}
+
+/** Prop types for which primaryIndex is a model index into propModelNames. */
+// Doors use a BG-matrix rendering pipeline in-game (not pad-based positioning),
+// so they are excluded from the real-geometry layer and shown as placeholders only.
+const PROP_TYPES_WITH_MODEL = new Set(["StandardProp", "SingleMonitor"]);
+
+/**
+ * Build a Three.js BufferGeometry from decoded prop triangles.
+ * Vertex colors from the N64 shade buffer are included as vertex attributes.
+ */
+function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const colors: number[] = [];
+
+  for (const tri of geo.triangles) {
+    for (const v of [tri.a, tri.b, tri.c]) {
+      positions.push(v.x, v.y, v.z);
+      // N64 vertex colors are 0-255; normalize to 0-1 for Three.js
+      colors.push(v.r / 255, v.g / 255, v.b / 255);
+    }
+  }
+
+  const bufGeo = new THREE.BufferGeometry();
+  bufGeo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  bufGeo.setAttribute("color",    new THREE.Float32BufferAttribute(colors, 3));
+  bufGeo.computeVertexNormals();
+  return bufGeo;
+}
+
+export function buildPropsLayer(
+  placements: PropPlacement[],
+  pads: PadRecord[],
+  modelNames: string[],
+  options: PropLayerOptions = {},
+  propModels: Record<string, PropModelGeometry> = {}
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "props";
+
+  // Cache decoded prop geometries so each model binary is only parsed once.
+  const modelGeoCache = new Map<string, THREE.BufferGeometry | null>();
+  const modelMatCache = new Map<string, THREE.MeshBasicMaterial>();
+
+  function getPropGeo(modelName: string): THREE.BufferGeometry | null {
+    if (!modelGeoCache.has(modelName)) {
+      const geo = propModels[modelName];
+      modelGeoCache.set(modelName, geo ? buildPropGeometry(geo) : null);
+    }
+    return modelGeoCache.get(modelName)!;
+  }
+
+  function getPropMat(modelName: string): THREE.MeshBasicMaterial {
+    if (!modelMatCache.has(modelName)) {
+      modelMatCache.set(
+        modelName,
+        new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
+      );
+    }
+    return modelMatCache.get(modelName)!;
+  }
+
+  // Fallback placeholder caches (used when no binary geometry is available).
+  const placeholderGeoCache = new Map<string, THREE.BufferGeometry>();
+  const placeholderMatCache = new Map<number, THREE.MeshBasicMaterial>();
+
+  function getPlaceholderGeo(key: string, style: typeof DEFAULT_PROP_STYLE): THREE.BufferGeometry {
+    if (!placeholderGeoCache.has(key)) {
+      let geo: THREE.BufferGeometry;
+      if (style.geo === "sphere") {
+        geo = new THREE.SphereGeometry(style.h * 0.55, 8, 8);
+      } else if (style.geo === "cylinder") {
+        geo = new THREE.CylinderGeometry(12, 12, style.h, 8);
+      } else {
+        geo = new THREE.BoxGeometry(30, style.h, 30);
+      }
+      placeholderGeoCache.set(key, geo);
+    }
+    return placeholderGeoCache.get(key)!;
+  }
+
+  function getPlaceholderMat(color: number): THREE.MeshBasicMaterial {
+    if (!placeholderMatCache.has(color)) {
+      placeholderMatCache.set(color, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.82 }));
+    }
+    return placeholderMatCache.get(color)!;
+  }
+
+  for (const placement of placements) {
+    const pad = pads[placement.padIndex];
+    if (!pad) continue;
+
+    const style = PROP_TYPE_STYLE[placement.type] ?? DEFAULT_PROP_STYLE;
+    const modelName = PROP_TYPES_WITH_MODEL.has(placement.type)
+      ? (modelNames[placement.primaryIndex] ?? null)
+      : null;
+
+    const realGeo = modelName ? getPropGeo(modelName) : null;
+
+    let mesh: THREE.Mesh;
+    if (realGeo && modelName) {
+      // Render using the pre-computed renderScale from the export pipeline.
+      // renderScale = PitemZ_entries[primaryIndex].scale × (extraScale / 256)
+      // This replicates the game's modelSetScale() call chain exactly.
+      const renderScale = placement.renderScale ?? 0.1;
+      mesh = new THREE.Mesh(realGeo, getPropMat(modelName));
+      mesh.scale.setScalar(renderScale);
+    } else {
+      // Fallback: type-colored placeholder primitive.
+      mesh = new THREE.Mesh(
+        getPlaceholderGeo(placement.type, style),
+        getPlaceholderMat(style.color)
+      );
+    }
+
+    mesh.position.set(pad.position.x, pad.position.y, pad.position.z);
+
+    // Apply yaw from the pad orientation vector (x,z components give heading).
+    const ori = pad.orientation;
+    if (ori.x !== 0 || ori.z !== 0) {
+      mesh.rotation.y = Math.atan2(ori.x, ori.z);
+    }
+
+    // Store metadata for future click inspection.
+    mesh.userData = {
+      propIndex:      placement.index,
+      propType:       placement.type,
+      propPadIndex:   placement.padIndex,
+      propPrimaryIndex: placement.primaryIndex,
+      propModelName:  modelName ?? `model_${placement.primaryIndex}`,
+      hasRealGeometry: realGeo !== null,
+    };
+
+    group.add(mesh);
+
+    if (options.showLabels) {
+      const label = modelName ?? placement.type;
+      const sprite = makePropLabelSprite(label, style.color);
+      sprite.position.set(
+        pad.position.x,
+        pad.position.y + style.h + 24,
+        pad.position.z
+      );
+      group.add(sprite);
+    }
   }
 
   return group;

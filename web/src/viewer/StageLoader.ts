@@ -80,6 +80,58 @@ export interface AtlasManifest {
   items: Record<string, AtlasItem>;
 }
 
+export interface PropPlacement {
+  index: number;
+  type: string;
+  /** Lower 16 bits of propDefs word 1: index into padlist for world position. */
+  padIndex: number;
+  /**
+   * Upper 16 bits of propDefs word 1.
+   * - StandardProp / SingleMonitor: 0-based PitemZ model index.
+   * - Guard: body / chr model index.
+   * - Collectable / AmmoBox: item-type index.
+   */
+  primaryIndex: number;
+  /**
+   * PropDefHeaderRecord.extrascale (u8.8 fixed-point, divide by 256 for float).
+   * e.g. 256 → 1.0 (identity), 332 → ~1.297.
+   */
+  extraScale: number;
+  /**
+   * Pre-computed effective render scale = PitemZ_entries[primaryIndex].scale × (extraScale / 256).
+   * Only present on StandardProp and SingleMonitor placements that have a decoded model.
+   */
+  renderScale?: number;
+}
+
+/** A single vertex in N64 model-local space. */
+export interface PropVertex {
+  x: number;
+  y: number;
+  z: number;
+  u: number;
+  v: number;
+  r: number;
+  g: number;
+  b: number;
+}
+
+/** One decoded triangle from a prop model's GFX display list. */
+export interface PropTriangle {
+  /** 1-based atlas material ID (matching atlas imageN.bin naming). */
+  materialId: number;
+  a: PropVertex;
+  b: PropVertex;
+  c: PropVertex;
+}
+
+/** Decoded geometry for one prop model, in model-local space. */
+export interface PropModelGeometry {
+  triangles: PropTriangle[];
+  /** Unique 1-based material IDs included in this model. */
+  materialIds: number[];
+}
+
 export interface StageData {
   stage: string;
   sourceFiles: {
@@ -93,6 +145,17 @@ export interface StageData {
   roomCenters: RoomCenter[];
   roomTriangles: RoomTriangle[];
   atlas?: AtlasManifest;
+  /** Spatial prop placements parsed from the setup file's propDefs[]. */
+  propPlacements?: PropPlacement[];
+  /** 0-indexed array mapping PitemZ index → model name (from propItemModelFileRecord). */
+  propModelNames?: string[];
+  /**
+   * Per-model render scale from PitemZ_entries[i].scale (e.g. 0.1 for most props,
+   * 1.0 for door models).  Keyed by model name.
+   */
+  propModelScales?: Record<string, number>;
+  /** Decoded geometry keyed by model name (only present after ROM extraction). */
+  propModels?: Record<string, PropModelGeometry>;
 }
 
 export async function loadStageData(path: string): Promise<StageData> {
