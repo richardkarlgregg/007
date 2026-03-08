@@ -136,6 +136,7 @@ export function buildBgMesh(triangles: RoomTriangle[]): THREE.Group {
 // ---------------------------------------------------------------------------
 const ATLAS_VERTEX_SHADER = /* glsl */ `
   #include <common>
+  #include <normal_pars_vertex>
   #include <shadowmap_pars_vertex>
   attribute float aMaterialId;
   attribute vec2  aTexelUV;
@@ -148,6 +149,8 @@ const ATLAS_VERTEX_SHADER = /* glsl */ `
 
   void main() {
     vec3 transformed = vec3(position);
+    #include <beginnormal_vertex>
+    #include <defaultnormal_vertex>
 
     vMaterialId  = aMaterialId;
     vTexelUV     = aTexelUV;
@@ -170,6 +173,8 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
   #include <common>
   #include <packing>
+  #include <bsdfs>
+  #include <lights_pars_begin>
   #include <shadowmap_pars_fragment>
   #include <shadowmask_pars_fragment>
 
