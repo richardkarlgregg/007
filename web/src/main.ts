@@ -568,6 +568,7 @@ async function bootstrap(): Promise<void> {
   const propTypePanel = document.getElementById("prop-type-panel");
   const propTypeList = document.getElementById("prop-type-list");
   const propTypeEnabled = new Map<string, boolean>();
+  const DEFAULT_VISIBLE_PROP_TYPES = new Set(["StandardProp", "Door"]);
 
   function applyPropTypeVisibility(): void {
     if (!propsLayer) return;
@@ -584,7 +585,9 @@ async function bootstrap(): Promise<void> {
     const counts = new Map<string, number>();
     for (const p of stage.propPlacements) {
       counts.set(p.type, (counts.get(p.type) ?? 0) + 1);
-      if (!propTypeEnabled.has(p.type)) propTypeEnabled.set(p.type, true);
+      if (!propTypeEnabled.has(p.type)) {
+        propTypeEnabled.set(p.type, DEFAULT_VISIBLE_PROP_TYPES.has(p.type));
+      }
     }
     const types = [...counts.keys()].sort((a, b) => a.localeCompare(b));
     propTypeList.innerHTML = "";
@@ -594,7 +597,7 @@ async function bootstrap(): Promise<void> {
       const label = document.createElement("label");
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = true;
+      cb.checked = propTypeEnabled.get(type) ?? false;
       cb.addEventListener("change", () => {
         propTypeEnabled.set(type, cb.checked);
         applyPropTypeVisibility();
@@ -621,6 +624,7 @@ async function bootstrap(): Promise<void> {
         showLabels: false,
         stageLevelScale: stage.stageLevelScale ?? 1.0,
         stanTiles: stage.stanTiles ?? [],
+        boundPads: stage.boundPads ?? [],
         atlas: stage.atlas,
         atlasTexture: atlasTextureForProps ?? undefined,
         fogUniforms

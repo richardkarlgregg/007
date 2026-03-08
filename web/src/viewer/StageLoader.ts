@@ -24,6 +24,22 @@ export interface PadRecord {
   flags: number;
 }
 
+export interface BoundPadRecord {
+  name: string;
+  position: Vec3;
+  up: Vec3;
+  orientation: Vec3;
+  flags: number;
+  bbox: {
+    xmin: number;
+    xmax: number;
+    ymin: number;
+    ymax: number;
+    zmin: number;
+    zmax: number;
+  };
+}
+
 export interface Portal {
   name: string;
   roomA: number;
@@ -83,8 +99,13 @@ export interface AtlasManifest {
 export interface PropPlacement {
   index: number;
   type: string;
-  /** Lower 16 bits of propDefs word 1: index into padlist for world position. */
+  /**
+   * Lower 16 bits of propDefs word 1: type-specific pad index.
+   * Most props use `pads`; doors use `boundPads`.
+   */
   padIndex: number;
+  /** Which setup pad table this placement references. */
+  padSource?: "pad" | "boundPad";
   /**
    * Upper 16 bits of propDefs word 1.
    * - StandardProp / SingleMonitor: 0-based PitemZ model index.
@@ -137,6 +158,11 @@ export interface PropModelGeometry {
     min: Vec3;
     max: Vec3;
   };
+  /** Optional source bbox from ModelRoData_BoundingBoxRecord. */
+  sourceBounds?: {
+    min: Vec3;
+    max: Vec3;
+  };
 }
 
 export interface StageData {
@@ -150,6 +176,7 @@ export interface StageData {
   };
   stanTiles: StanTile[];
   pads: PadRecord[];
+  boundPads?: BoundPadRecord[];
   portals: Portal[];
   roomCenters: RoomCenter[];
   roomTriangles: RoomTriangle[];

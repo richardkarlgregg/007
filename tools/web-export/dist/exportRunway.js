@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { buildRunwayAtlas } from "./buildRunwayAtlas.js";
 import { parseBgFile } from "./parseBg.js";
 import { parsePropModel, propBinPath } from "./parsePropBinaryModel.js";
-import { parseSetupPadlist, parseSetupPropdefs, parsePropModelEntries } from "./parseSetup.js";
+import { parseSetupPad3dlist, parseSetupPadlist, parseSetupPropdefs, parsePropModelEntries } from "./parseSetup.js";
 import { parseStanFile } from "./parseStan.js";
 function normalizePath(p) {
     return p.split(path.sep).join("/");
@@ -54,6 +54,7 @@ const stanTiles = parseStanFile(sourceFiles.stan).sort((a, b) => a.id - b.id);
 // Pads are kept in original parse order so that padIndex values from propDefs[]
 // can be used as direct array indices (padIndex 0 = first entry in padlist[]).
 const pads = parseSetupPadlist(sourceFiles.setup);
+const boundPads = parseSetupPad3dlist(sourceFiles.setup);
 const propPlacements = parseSetupPropdefs(sourceFiles.setup);
 const propModelEntries = parsePropModelEntries(sourceFiles.propModelNames);
 // Flat name array for backward-compatible indexing (propModelNames[primaryIndex]).
@@ -68,10 +69,15 @@ const portals = bg.portals.sort((a, b) => a.name.localeCompare(b.name));
 const roomCenters = bg.roomCenters.sort((a, b) => a.roomIndex - b.roomIndex);
 const roomTriangles = bg.roomTriangles;
 // Collect unique prop model names used on this stage.
-// Doors use a BG-matrix-based rendering pipeline in the game (not pad-based), so
-// their models are parsed for completeness but excluded from the 3-D viewer layer.
-// StandardProp and SingleMonitor store a 0-based PitemZ index in primaryIndex.
-const PROP_TYPES_WITH_MODEL = new Set(["StandardProp", "SingleMonitor"]);
+// These setup types store a 0-based PitemZ model index in primaryIndex.
+const PROP_TYPES_WITH_MODEL = new Set([
+    "StandardProp",
+    "SingleMonitor",
+    "Door",
+    "Tank",
+    "Aircraft",
+    "Drone",
+]);
 const usedModelNames = new Set();
 for (const p of propPlacements) {
     if (PROP_TYPES_WITH_MODEL.has(p.type)) {
@@ -130,6 +136,7 @@ const outputData = {
     },
     stanTiles,
     pads,
+    boundPads,
     portals,
     roomCenters,
     roomTriangles,

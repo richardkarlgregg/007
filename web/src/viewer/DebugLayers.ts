@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { AtlasManifest, PadRecord, Portal, PropModelGeometry, PropPlacement, RoomTriangle, StanTile } from "./StageLoader";
+import type { AtlasManifest, BoundPadRecord, PadRecord, Portal, PropModelGeometry, PropPlacement, RoomTriangle, StanTile } from "./StageLoader";
 import type { LoadedOverride } from "./OverrideLoader";
 
 // ---------------------------------------------------------------------------
@@ -184,6 +184,7 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   uniform sampler2D uLookup;
   uniform vec2  uAtlasSize;
   uniform float uLookupWidth;
+  uniform float uAlphaDiscardThreshold;
 
   // Fog — controlled directly so the G-key toggle is instant and reliable.
   uniform float uFogNear;
@@ -232,7 +233,7 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
     vec4 tex = texture2D(uAtlas, atlasUV);
 
     // 1-bit alpha: discard fully transparent texels (fences, foliage, etc.)
-    if (tex.a < 0.5) discard;
+    if (tex.a < uAlphaDiscardThreshold) discard;
 
     // N64 SHADE * TEXEL0 combine: vertex shade modulates texture colour.
     vec3 rgb = shade * tex.rgb;
@@ -303,6 +304,7 @@ export function buildBgMeshWithAtlas(
     uLookup:      { value: lookupTex },
     uAtlasSize:   { value: new THREE.Vector2(atlas.width, atlas.height) },
     uLookupWidth: { value: LOOKUP_WIDTH },
+    uAlphaDiscardThreshold: { value: 0.5 },
     // Spread fog uniforms by reference so live updates from applyFog() work.
     uFogNear:    fogUniforms.uFogNear,
     uFogFar:     fogUniforms.uFogFar,
@@ -778,6 +780,8 @@ export interface PropLayerOptions {
   stageLevelScale?: number;
   /** Optional stan walk tiles (source-like Y placement surface). */
   stanTiles?: StanTile[];
+  /** Optional setup bound pads (pad3dlist) used by door placement. */
+  boundPads?: BoundPadRecord[];
   /** Optional atlas manifest for textured prop rendering. */
   atlas?: AtlasManifest;
   /** Atlas texture loaded from atlas.atlasImage. */
@@ -787,9 +791,14 @@ export interface PropLayerOptions {
 }
 
 /** Prop types for which primaryIndex is a model index into propModelNames. */
-// Doors use a BG-matrix rendering pipeline in-game (not pad-based positioning),
-// so they are excluded from the real-geometry layer and shown as placeholders only.
-const PROP_TYPES_WITH_MODEL = new Set(["StandardProp", "SingleMonitor"]);
+const PROP_TYPES_WITH_MODEL = new Set([
+  "StandardProp",
+  "SingleMonitor",
+  "Door",
+  "Tank",
+  "Aircraft",
+  "Drone",
+]);
 
 /**
  * Build a Three.js BufferGeometry from decoded prop triangles.
@@ -834,7 +843,31 @@ export function buildPropsLayer(
 ): THREE.Group {
   const stageLevelScale = options.stageLevelScale ?? 1.0;
   const stanTiles = options.stanTiles ?? [];
+  const boundPads = options.boundPads ?? [];
   const fogUniforms = options.fogUniforms ?? makeFogUniforms();
+
+  function doorPadCenter(boundPad: BoundPadRecord): THREE.Vector3 {
+    // Source equivalent: sub_GAME_7F001BD4 / padGetCentre.
+    const bb = {
+      zmax: boundPad.bbox.xmin,
+      zmin: boundPad.bbox.xmax,
+      ymax: boundPad.bbox.ymin,
+      ymin: boundPad.bbox.ymax,
+      xmax: boundPad.bbox.zmin,
+      xmin: boundPad.bbox.zmax,
+    };
+    const up = new THREE.Vector3(boundPad.up.x, boundPad.up.y, boundPad.up.z);
+    const look = new THREE.Vector3(boundPad.orientation.x, boundPad.orientation.y, boundPad.orientation.z);
+    const normal = new THREE.Vector3().crossVectors(up, look);
+    if (normal.lengthSq() < 1e-10) normal.set(1, 0, 0);
+    normal.normalize();
+    const base = new THREE.Vector3(boundPad.position.x, boundPad.position.y, boundPad.position.z);
+    const offset = new THREE.Vector3(0, 0, 0)
+      .addScaledVector(normal, (bb.zmax + bb.zmin) * 0.5)
+      .addScaledVector(up, (bb.ymax + bb.ymin) * 0.5)
+      .addScaledVector(look, (bb.xmax + bb.xmin) * 0.5);
+    return base.add(offset);
+  }
 
   function barycentricYAtXZ(
     px: number,
@@ -923,6 +956,9 @@ export function buildPropsLayer(
         uLookup:      { value: lookupTex },
         uAtlasSize:   { value: new THREE.Vector2(options.atlas.width, options.atlas.height) },
         uLookupWidth: { value: LOOKUP_WIDTH },
+        // Props (especially vehicles) can use low-alpha texels for shading;
+        // keep discard nearly-off to avoid dropping large mesh regions.
+        uAlphaDiscardThreshold: { value: 0.01 },
         uFogNear:     fogUniforms.uFogNear,
         uFogFar:      fogUniforms.uFogFar,
         uFogColor:    fogUniforms.uFogColor,
@@ -980,9 +1016,31 @@ export function buildPropsLayer(
     return placeholderMatCache.get(color)!;
   }
 
+  function applyPadOrientation(
+    mesh: THREE.Mesh,
+    pose: { up: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number } }
+  ): void {
+    const up = new THREE.Vector3(pose.up.x, pose.up.y, pose.up.z);
+    const look = new THREE.Vector3(pose.orientation.x, pose.orientation.y, pose.orientation.z);
+    if (up.lengthSq() < 1e-10) up.set(0, 1, 0);
+    if (look.lengthSq() < 1e-10) look.set(0, 0, 1);
+    up.normalize();
+    look.normalize();
+    // Build an orthonormal basis from setup vectors.
+    const right = new THREE.Vector3().crossVectors(up, look);
+    if (right.lengthSq() < 1e-10) right.set(1, 0, 0);
+    right.normalize();
+    const upOrtho = new THREE.Vector3().crossVectors(look, right).normalize();
+    const rot = new THREE.Matrix4().makeBasis(right, upOrtho, look);
+    mesh.quaternion.setFromRotationMatrix(rot);
+  }
+
   for (const placement of placements) {
-    const pad = pads[placement.padIndex];
-    if (!pad) continue;
+    const isDoor = placement.type === "Door";
+    const useBoundPad = placement.padSource === "boundPad" || isDoor;
+    const pad = useBoundPad ? undefined : pads[placement.padIndex];
+    const boundPad = useBoundPad ? boundPads[placement.padIndex] : undefined;
+    if (!pad && !boundPad) continue;
 
     const style = PROP_TYPE_STYLE[placement.type] ?? DEFAULT_PROP_STYLE;
     const modelName = PROP_TYPES_WITH_MODEL.has(placement.type)
@@ -1007,14 +1065,87 @@ export function buildPropsLayer(
       );
     }
 
-    mesh.position.set(pad.position.x, pad.position.y, pad.position.z);
-    if (realGeo && modelName) {
+    if (realGeo && modelName && isDoor && boundPad) {
+      // Source-inspired door setup path:
+      // - center from bound pad (padGetCentre)
+      // - non-uniform axis scaling from bound bbox -> model bbox extents
+      const model = propModels[modelName];
+      const bounds = model.sourceBounds ?? model.bounds;
+      const dx = bounds.max.x - bounds.min.x;
+      const dy = bounds.max.y - bounds.min.y;
+      const dz = bounds.max.z - bounds.min.z;
+      const safeDx = Math.abs(dx) > 1e-6 ? dx : 1.0;
+      const safeDy = Math.abs(dy) > 1e-6 ? dy : 1.0;
+      const safeDz = Math.abs(dz) > 1e-6 ? dz : 1.0;
+
+      const bb2 = {
+        zmax: boundPad.bbox.xmin,
+        zmin: boundPad.bbox.xmax,
+        ymax: boundPad.bbox.ymin,
+        ymin: boundPad.bbox.ymax,
+        xmax: boundPad.bbox.zmin,
+        xmin: boundPad.bbox.zmax,
+      };
+      let xscale = (bb2.ymin - bb2.ymax) / safeDx;
+      let yscale = (bb2.xmin - bb2.xmax) / safeDy;
+      let zscale = (bb2.zmin - bb2.zmax) / safeDz;
+      if (Math.abs(xscale) <= 1e-6 || Math.abs(yscale) <= 1e-6 || Math.abs(zscale) <= 1e-6) {
+        xscale = 1.0;
+        yscale = 1.0;
+        zscale = 1.0;
+      }
+
+      const up = new THREE.Vector3(boundPad.up.x, boundPad.up.y, boundPad.up.z);
+      const look = new THREE.Vector3(boundPad.orientation.x, boundPad.orientation.y, boundPad.orientation.z);
+      const normal = new THREE.Vector3().crossVectors(up, look);
+      if (up.lengthSq() < 1e-10) up.set(0, 1, 0);
+      if (look.lengthSq() < 1e-10) look.set(0, 0, 1);
+      if (normal.lengthSq() < 1e-10) normal.set(1, 0, 0);
+      up.normalize();
+      look.normalize();
+      normal.normalize();
+
+      // Map local model axes to door pad frame (matching setupDoor scale mapping):
+      // model X -> pad.up, model Y -> pad.look, model Z -> pad.normal.
+      const colX = up.clone().multiplyScalar(xscale);
+      const colY = look.clone().multiplyScalar(yscale);
+      const colZ = normal.clone().multiplyScalar(zscale);
+
+      const cx = (bounds.min.x + bounds.max.x) * 0.5;
+      const cy = (bounds.min.y + bounds.max.y) * 0.5;
+      const cz = (bounds.min.z + bounds.max.z) * 0.5;
+      const center = doorPadCenter(boundPad);
+      const translation = center
+        .clone()
+        .addScaledVector(colX, -cx)
+        .addScaledVector(colY, -cy)
+        .addScaledVector(colZ, -cz);
+
+      const matrix = new THREE.Matrix4().makeBasis(colX, colY, colZ);
+      matrix.setPosition(translation);
+      matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    } else {
+      const p = boundPad ?? pad;
+      if (!p) continue;
+      mesh.position.set(p.position.x, p.position.y, p.position.z);
+    }
+
+    // Door branch already writes a full transform matrix.
+    if (!(isDoor && realGeo && modelName && boundPad)) {
+      const pose = boundPad ?? pad;
+      if (pose) applyPadOrientation(mesh, pose);
+    }
+
+    if (realGeo && modelName && !isDoor) {
       const model = propModels[modelName];
       const renderScale = (placement.renderScale ?? 0.1) * stageLevelScale;
-      const up = new THREE.Vector3(pad.up.x, pad.up.y, pad.up.z);
+      const pose = boundPad ?? pad;
+      if (!pose) continue;
+      const up = new THREE.Vector3(pose.up.x, pose.up.y, pose.up.z);
       if (up.lengthSq() < 1e-8) up.set(0, 1, 0);
       up.normalize();
       const objectFlags = placement.objectFlags ?? 0;
+      const shouldGroundToStan = Boolean(pad);
 
       // Source-style placement branches from sub_GAME_7F04088C:
       //  flags&4 => in-air upside-down offset by bbox ymax
@@ -1024,7 +1155,7 @@ export function buildPropsLayer(
         mesh.position.addScaledVector(up, -(model.bounds.max.y * renderScale));
       } else if (objectFlags & 0x00000008) {
         mesh.position.addScaledVector(up, -(model.bounds.min.y * renderScale));
-      } else {
+      } else if (shouldGroundToStan) {
         const groundY = sampleGroundYFromStan(pad.position.x, pad.position.z, pad.position.y);
         const offset = -(model.bounds.min.y * renderScale);
         mesh.position.x += up.x * offset;
@@ -1052,6 +1183,9 @@ export function buildPropsLayer(
         } else {
           mesh.position.y += up.y * offset;
         }
+      } else {
+        const offset = -(model.bounds.min.y * renderScale);
+        mesh.position.addScaledVector(up, offset);
       }
 
       // Register support footprint for subsequent props (e.g. keyboard on desk).
@@ -1078,19 +1212,15 @@ export function buildPropsLayer(
         if (wz < minZ) minZ = wz;
         if (wz > maxZ) maxZ = wz;
       }
-      supportSurfaces.push({
-        minX,
-        maxX,
-        minZ,
-        maxZ,
-        topY: mesh.position.y + (model.bounds.max.y * renderScale)
-      });
-    }
-
-    // Apply yaw from the pad orientation vector (x,z components give heading).
-    const ori = pad.orientation;
-    if (ori.x !== 0 || ori.z !== 0) {
-      mesh.rotation.y = Math.atan2(ori.x, ori.z);
+      if (shouldGroundToStan) {
+        supportSurfaces.push({
+          minX,
+          maxX,
+          minZ,
+          maxZ,
+          topY: mesh.position.y + (model.bounds.max.y * renderScale)
+        });
+      }
     }
 
     // Store metadata for future click inspection.
@@ -1109,10 +1239,12 @@ export function buildPropsLayer(
     if (options.showLabels) {
       const label = modelName ?? placement.type;
       const sprite = makePropLabelSprite(label, style.color);
+      const posSource = boundPad ?? pad;
+      if (!posSource) continue;
       sprite.position.set(
-        pad.position.x,
-        pad.position.y + style.h + 24,
-        pad.position.z
+        posSource.position.x,
+        posSource.position.y + style.h + 24,
+        posSource.position.z
       );
       group.add(sprite);
     }

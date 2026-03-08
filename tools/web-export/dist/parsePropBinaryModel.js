@@ -55,6 +55,13 @@ function readI16BE(buf, off) {
     const v = (buf[off] << 8) | buf[off + 1];
     return v & 0x8000 ? v - 0x10000 : v;
 }
+function readU16BE(buf, off) {
+    return ((buf[off] << 8) | buf[off + 1]) >>> 0;
+}
+function readF32BE(buf, off) {
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    return dv.getFloat32(off, false);
+}
 /** True when `v` looks like a valid pointer into the prop segment. */
 function isSegAddr(v) {
     return v >= SEGMENT_BASE + 4 && v < SEGMENT_MAX;
@@ -123,15 +130,42 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset) {
     let materialId = 0;
     const limit = binary.length - 8;
     let pos = gfxOffset;
+    const returnStack = [];
     let iters = 0;
-    while (pos <= limit && iters < 8192) {
+    while (iters < 65536) {
+        if (pos < 0 || pos > limit) {
+            if (returnStack.length > 0) {
+                pos = returnStack.pop();
+                continue;
+            }
+            break;
+        }
         iters++;
         const opcode = binary[pos];
         const w0 = readU32BE(binary, pos);
         const w1 = readU32BE(binary, pos + 4);
         pos += 8;
-        if (opcode === 0xb8)
-            break; // G_ENDDL
+        if (opcode === 0xb8) {
+            // G_ENDDL — return from sub-DL if this was gsSPDisplayList.
+            if (returnStack.length > 0) {
+                pos = returnStack.pop();
+                continue;
+            }
+            break;
+        }
+        if (opcode === 0xde) {
+            // G_DL / G_BRANCHLIST
+            const target = w1 & 0x00ffffff;
+            if (target >= 0 && target <= limit) {
+                // gbi.h: G_DL_NOPUSH = 1, G_DL_PUSH = 0 (low 8 bits of w0 parameter)
+                const noPush = (w0 & 0xff) === 0x01;
+                if (!noPush && returnStack.length < 128) {
+                    returnStack.push(pos);
+                }
+                pos = target;
+            }
+            continue;
+        }
         if (opcode === 0x04) {
             // G_VTX — load vertices into the 64-slot RSP cache.
             // parseBg.ts uses the F3DEX2 fallback path when `length !== n*16`.
@@ -194,6 +228,156 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset) {
     }
     return triangles;
 }
+function ptrToOffset(ptr, binaryLen) {
+    if (!isSegAddr(ptr))
+        return null;
+    const off = ptr - SEGMENT_BASE;
+    if (off < 0 || off >= binaryLen)
+        return null;
+    return off;
+}
+/**
+ * Walk model nodes from ModelFileHeader.RootNode and collect all display-list
+ * payload records that carry explicit vertex tables.
+ */
+function collectDisplayListRecordsFromModelTree(binary) {
+    if (binary.length < 4)
+        return [];
+    const rootPtr = readU32BE(binary, 0);
+    const rootOff = ptrToOffset(rootPtr, binary.length);
+    if (rootOff === null)
+        return [];
+    const out = [];
+    const seenNodes = new Set();
+    const seenRecords = new Set();
+    const stack = [rootOff];
+    while (stack.length > 0) {
+        const nodeOff = stack.pop();
+        if (seenNodes.has(nodeOff))
+            continue;
+        seenNodes.add(nodeOff);
+        if (nodeOff < 0 || nodeOff + 24 > binary.length)
+            continue;
+        const opcode = readU16BE(binary, nodeOff);
+        const dataPtr = readU32BE(binary, nodeOff + 4);
+        const nextPtr = readU32BE(binary, nodeOff + 0x0c);
+        const childPtr = readU32BE(binary, nodeOff + 0x14);
+        const nextOff = ptrToOffset(nextPtr, binary.length);
+        const childOff = ptrToOffset(childPtr, binary.length);
+        if (nextOff !== null)
+            stack.push(nextOff);
+        if (childOff !== null)
+            stack.push(childOff);
+        const dataOff = ptrToOffset(dataPtr, binary.length);
+        if (dataOff === null)
+            continue;
+        let rec = null;
+        if (opcode === 0x0004) {
+            // Opcode 4: ModelRoData_DisplayListRecord
+            if (dataOff + 0x14 <= binary.length) {
+                const priPtr = readU32BE(binary, dataOff + 0x00);
+                const secPtr = readU32BE(binary, dataOff + 0x04);
+                const vtxPtr = readU32BE(binary, dataOff + 0x0c);
+                const numVtx = readU16BE(binary, dataOff + 0x10);
+                const priOff = ptrToOffset(priPtr, binary.length);
+                const secOff = secPtr === 0 ? null : ptrToOffset(secPtr, binary.length);
+                const vtxOff = ptrToOffset(vtxPtr, binary.length);
+                if (priOff !== null && (secPtr === 0 || secOff !== null) && vtxOff !== null && numVtx >= 1 && numVtx <= 255) {
+                    rec = {
+                        primaryGfxOffset: priOff,
+                        secondaryGfxOffset: secPtr === 0 ? null : secOff,
+                        vtxBinaryOffset: vtxOff,
+                        vtxCount: numVtx,
+                    };
+                }
+            }
+        }
+        else if (opcode === 0x0016) {
+            // Opcode 22: ModelRoData_DisplayListPrimaryRecord
+            if (dataOff + 0x10 <= binary.length) {
+                const numVtx = readU32BE(binary, dataOff + 0x00);
+                const vtxPtr = readU32BE(binary, dataOff + 0x04);
+                const priPtr = readU32BE(binary, dataOff + 0x08);
+                const priOff = ptrToOffset(priPtr, binary.length);
+                const vtxOff = ptrToOffset(vtxPtr, binary.length);
+                if (priOff !== null && vtxOff !== null && numVtx >= 1 && numVtx <= 255) {
+                    rec = {
+                        primaryGfxOffset: priOff,
+                        secondaryGfxOffset: null,
+                        vtxBinaryOffset: vtxOff,
+                        vtxCount: numVtx,
+                    };
+                }
+            }
+        }
+        else if (opcode === 0x0018) {
+            // Opcode 24: ModelRoData_DisplayList_CollisionRecord
+            if (dataOff + 0x20 <= binary.length) {
+                const priPtr = readU32BE(binary, dataOff + 0x00);
+                const secPtr = readU32BE(binary, dataOff + 0x04);
+                const vtxPtr = readU32BE(binary, dataOff + 0x08);
+                const numVtx = readU16BE(binary, dataOff + 0x0c);
+                const priOff = ptrToOffset(priPtr, binary.length);
+                const secOff = secPtr === 0 ? null : ptrToOffset(secPtr, binary.length);
+                const vtxOff = ptrToOffset(vtxPtr, binary.length);
+                if (priOff !== null && (secPtr === 0 || secOff !== null) && vtxOff !== null && numVtx >= 1 && numVtx <= 255) {
+                    rec = {
+                        primaryGfxOffset: priOff,
+                        secondaryGfxOffset: secPtr === 0 ? null : secOff,
+                        vtxBinaryOffset: vtxOff,
+                        vtxCount: numVtx,
+                    };
+                }
+            }
+        }
+        if (rec) {
+            const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}`;
+            if (!seenRecords.has(key)) {
+                seenRecords.add(key);
+                out.push(rec);
+            }
+        }
+    }
+    return out;
+}
+function parseModelBoundingBox(binary) {
+    if (binary.length < 4)
+        return null;
+    const rootPtr = readU32BE(binary, 0);
+    if (!isSegAddr(rootPtr))
+        return null;
+    const rootOff = rootPtr - SEGMENT_BASE;
+    if (rootOff < 0 || rootOff + 0x18 > binary.length)
+        return null;
+    const childPtr = readU32BE(binary, rootOff + 0x14);
+    if (!isSegAddr(childPtr))
+        return null;
+    const childOff = childPtr - SEGMENT_BASE;
+    if (childOff < 0 || childOff + 0x18 > binary.length)
+        return null;
+    const opcode = readU16BE(binary, childOff);
+    // ModelRoData_BoundingBoxRecord = opcode 10 (0x0A)
+    if (opcode !== 0x000a)
+        return null;
+    const dataPtr = readU32BE(binary, childOff + 0x04);
+    if (!isSegAddr(dataPtr))
+        return null;
+    const dataOff = dataPtr - SEGMENT_BASE;
+    if (dataOff < 0 || dataOff + 0x1c > binary.length)
+        return null;
+    const xmin = readF32BE(binary, dataOff + 0x04);
+    const xmax = readF32BE(binary, dataOff + 0x08);
+    const ymin = readF32BE(binary, dataOff + 0x0c);
+    const ymax = readF32BE(binary, dataOff + 0x10);
+    const zmin = readF32BE(binary, dataOff + 0x14);
+    const zmax = readF32BE(binary, dataOff + 0x18);
+    if (![xmin, xmax, ymin, ymax, zmin, zmax].every((v) => Number.isFinite(v)))
+        return null;
+    return {
+        min: { x: xmin, y: ymin, z: zmin },
+        max: { x: xmax, y: ymax, z: zmax },
+    };
+}
 /**
  * Scan the binary for ModelRoData_DisplayList_CollisionRecord structures.
  * A valid record matches:
@@ -251,6 +435,65 @@ function scanDLCollisionRecords(binary) {
     }
     return records;
 }
+/**
+ * Scan for ModelRoData_DisplayListRecord (opcode 4) payloads.
+ * Layout (20 bytes):
+ *   +0x00 primary GFX ptr
+ *   +0x04 secondary GFX ptr (optional)
+ *   +0x08 base addr (typically 0x05000000)
+ *   +0x0C vertex ptr
+ *   +0x10 u16 numVertices
+ *   +0x12 s8 modelType (0..4)
+ */
+function scanDisplayListRecords(binary) {
+    const records = [];
+    const seen = new Set();
+    for (let off = 0; off + 20 <= binary.length; off += 4) {
+        const priPtr = readU32BE(binary, off);
+        if (!isSegAddr(priPtr))
+            continue;
+        const secPtr = readU32BE(binary, off + 4);
+        if (secPtr !== 0 && !isSegAddr(secPtr))
+            continue;
+        const basePtr = readU32BE(binary, off + 8);
+        if (basePtr !== 0 && !isSegAddr(basePtr))
+            continue;
+        const vtxPtr = readU32BE(binary, off + 0x0c);
+        if (!isSegAddr(vtxPtr))
+            continue;
+        const numVtx = readU16BE(binary, off + 0x10);
+        if (numVtx < 1 || numVtx > 255)
+            continue;
+        const modelType = binary[off + 0x12];
+        if (modelType > 4)
+            continue;
+        const priOff = priPtr - SEGMENT_BASE;
+        const vtxOff = vtxPtr - SEGMENT_BASE;
+        if (priOff < 0 || priOff + 8 > binary.length)
+            continue;
+        if (vtxOff < 0 || vtxOff + numVtx * 16 > binary.length)
+            continue;
+        const firstOpcode = binary[priOff];
+        const knownOpcodes = new Set([
+            0x04, 0xb1, 0xbf, 0xb8, 0xc0,
+            0xe7, 0xf0, 0xf3, 0xf5, 0xfa, 0xfc, 0xfd, 0xfe,
+            0xba, 0xbb, 0xbc, 0xb9, 0xbe,
+        ]);
+        if (!knownOpcodes.has(firstOpcode))
+            continue;
+        const key = `${priOff}:${vtxOff}`;
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        records.push({
+            primaryGfxOffset: priOff,
+            secondaryGfxOffset: secPtr !== 0 ? secPtr - SEGMENT_BASE : null,
+            vtxBinaryOffset: vtxOff,
+            vtxCount: numVtx,
+        });
+    }
+    return records;
+}
 // ─── Main export ─────────────────────────────────────────────────────────────
 /**
  * Parse a prop model binary file extracted from the GoldenEye ROM.
@@ -262,7 +505,17 @@ export function parsePropModel(binPath) {
     const binary = loadPropBinary(binPath);
     if (!binary)
         return null;
-    const dlRecords = scanDLCollisionRecords(binary);
+    const dedup = new Map();
+    for (const rec of [
+        ...collectDisplayListRecordsFromModelTree(binary),
+        ...scanDLCollisionRecords(binary),
+        ...scanDisplayListRecords(binary),
+    ]) {
+        const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}`;
+        if (!dedup.has(key))
+            dedup.set(key, rec);
+    }
+    const dlRecords = [...dedup.values()];
     if (dlRecords.length === 0)
         return null;
     const allTriangles = [];
@@ -307,6 +560,7 @@ export function parsePropModel(binPath) {
                 maxZ = v.z;
         }
     }
+    const sourceBounds = parseModelBoundingBox(binary) ?? undefined;
     return {
         triangles: allTriangles,
         materialIds: [...materialIdSet].sort((a, b) => a - b),
@@ -314,6 +568,7 @@ export function parsePropModel(binPath) {
             min: { x: minX, y: minY, z: minZ },
             max: { x: maxX, y: maxY, z: maxZ },
         },
+        sourceBounds,
     };
 }
 /**

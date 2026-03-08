@@ -4,6 +4,9 @@ const SPATIAL_PROP_TYPES = new Set([
     "Guard",
     "StandardProp",
     "Door",
+    "Aircraft",
+    "Vehichle",
+    "Autogun",
     "AmmoBox",
     "Collectable",
     "Tank",
@@ -66,12 +69,16 @@ export function parseSetupPropdefs(path) {
         const index = Number.parseInt(match[2], 10);
         const extraScale = Number.parseInt(match[3], 10);
         const primaryIndex = Number.parseInt(match[4], 10);
-        const padIndex = Number.parseInt(match[5], 10);
+        const rawPadIndex = Number.parseInt(match[5], 10);
         const objectFlags = Number.parseInt(match[6], 0);
-        // Pad indices > 9999 are virtual pads (e.g. intro camera positions) — skip.
-        if (padIndex > 9999)
+        // Runtime pad addressing:
+        //   0..9999   => g_CurrentSetup.pads[pad]
+        //   >=10000   => g_CurrentSetup.boundpads[getBoundPadNum(pad)] (pad3dlist)
+        const padSource = rawPadIndex >= 10000 ? "boundPad" : "pad";
+        const padIndex = rawPadIndex >= 10000 ? rawPadIndex - 10000 : rawPadIndex;
+        if (padIndex < 0)
             continue;
-        results.push({ index, type, padIndex, primaryIndex, extraScale, objectFlags });
+        results.push({ index, type, padIndex, padSource, primaryIndex, extraScale, objectFlags });
     }
     return results;
 }
@@ -113,4 +120,53 @@ export function parseSetupPadlist(path) {
         });
     }
     return pads;
+}
+export function parseSetupPad3dlist(path) {
+    const source = readFileSync(path, "utf8");
+    const blockMatch = source.match(/BoundPadRecord\s+pad3dlist\[\]\s*=\s*\{([\s\S]*?)\n\};/);
+    if (!blockMatch) {
+        throw new Error(`Could not find BoundPadRecord pad3dlist[] in ${path}`);
+    }
+    const entryRegex = new RegExp(`\\{\\s*\\{\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*\\},\\s*` +
+        `\\{\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*\\},\\s*` +
+        `\\{\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*\\},\\s*` +
+        `("([^"]*)"|NULL)\\s*,\\s*(-?\\d+)\\s*,\\s*\\{\\s*` +
+        `(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*,\\s*` +
+        `(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*,\\s*(${NUMBER})f?\\s*\\}\\s*\\}`, "gi");
+    const results = [];
+    let match = null;
+    while ((match = entryRegex.exec(blockMatch[1])) !== null) {
+        const nameLiteral = match[11];
+        // Terminator entry is NULL + all zero vectors/bbox.
+        if (!nameLiteral)
+            continue;
+        results.push({
+            name: nameLiteral,
+            position: {
+                x: parseFloatNumber(match[1]),
+                y: parseFloatNumber(match[2]),
+                z: parseFloatNumber(match[3]),
+            },
+            up: {
+                x: parseFloatNumber(match[4]),
+                y: parseFloatNumber(match[5]),
+                z: parseFloatNumber(match[6]),
+            },
+            orientation: {
+                x: parseFloatNumber(match[7]),
+                y: parseFloatNumber(match[8]),
+                z: parseFloatNumber(match[9]),
+            },
+            flags: Number.parseInt(match[12], 10),
+            bbox: {
+                xmin: parseFloatNumber(match[13]),
+                xmax: parseFloatNumber(match[14]),
+                ymin: parseFloatNumber(match[15]),
+                ymax: parseFloatNumber(match[16]),
+                zmin: parseFloatNumber(match[17]),
+                zmax: parseFloatNumber(match[18]),
+            },
+        });
+    }
+    return results;
 }
