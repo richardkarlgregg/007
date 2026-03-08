@@ -565,6 +565,53 @@ async function bootstrap(): Promise<void> {
   scene.add(portalsLayer);
 
   let propsLayer: ReturnType<typeof buildPropsLayer> | null = null;
+  const propTypePanel = document.getElementById("prop-type-panel");
+  const propTypeList = document.getElementById("prop-type-list");
+  const propTypeEnabled = new Map<string, boolean>();
+
+  function applyPropTypeVisibility(): void {
+    if (!propsLayer) return;
+    propsLayer.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      const propType = node.userData?.propType as string | undefined;
+      if (!propType) return;
+      node.visible = propTypeEnabled.get(propType) ?? true;
+    });
+  }
+
+  function initPropTypeFilters(): void {
+    if (!propTypeList || !stage.propPlacements) return;
+    const counts = new Map<string, number>();
+    for (const p of stage.propPlacements) {
+      counts.set(p.type, (counts.get(p.type) ?? 0) + 1);
+      if (!propTypeEnabled.has(p.type)) propTypeEnabled.set(p.type, true);
+    }
+    const types = [...counts.keys()].sort((a, b) => a.localeCompare(b));
+    propTypeList.innerHTML = "";
+    for (const type of types) {
+      const row = document.createElement("div");
+      row.className = "prop-type-row";
+      const label = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.addEventListener("change", () => {
+        propTypeEnabled.set(type, cb.checked);
+        applyPropTypeVisibility();
+      });
+      const text = document.createElement("span");
+      text.textContent = type;
+      label.appendChild(cb);
+      label.appendChild(text);
+      const count = document.createElement("span");
+      count.className = "prop-type-count";
+      count.textContent = String(counts.get(type) ?? 0);
+      row.appendChild(label);
+      row.appendChild(count);
+      propTypeList.appendChild(row);
+    }
+  }
+
   if (stage.propPlacements && stage.propPlacements.length > 0) {
     propsLayer = buildPropsLayer(
       stage.propPlacements,
@@ -582,6 +629,8 @@ async function bootstrap(): Promise<void> {
     );
     propsLayer.visible = false;
     scene.add(propsLayer);
+    initPropTypeFilters();
+    applyPropTypeVisibility();
   }
 
   const roomLabelsLayer = buildRoomLabelsLayer(stage.roomCenters);
@@ -973,6 +1022,8 @@ async function bootstrap(): Promise<void> {
       grid.visible = !grid.visible;
     } else if (event.key === "0") {
       if (propsLayer) propsLayer.visible = !propsLayer.visible;
+    } else if (event.key === "p" || event.key === "P") {
+      propTypePanel?.classList.toggle("hidden");
     } else if (event.key === "7") {
       toggleAtlasViewer();
     } else if (event.key === "8") {

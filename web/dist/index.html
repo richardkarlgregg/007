@@ -22,14 +22,79 @@
         position: fixed;
         top: 12px;
         left: 12px;
-        padding: 10px 12px;
-        background: rgba(0, 0, 0, 0.45);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 8px;
+        padding: 10px 12px 9px;
+        background: rgba(5, 8, 14, 0.72);
+        border: 1px solid rgba(140, 170, 230, 0.25);
+        border-radius: 10px;
         font-size: 12px;
-        line-height: 1.4;
+        line-height: 1.35;
         user-select: none;
-        pointer-events: none;
+        pointer-events: auto;
+        max-width: 320px;
+      }
+      .hud-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        color: #d8e7ff;
+        margin-bottom: 6px;
+      }
+      .hud-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 2px 8px;
+      }
+      .hud-key {
+        color: #8fb3ff;
+        font-family: Consolas, "Courier New", monospace;
+        white-space: nowrap;
+      }
+      .hud-val {
+        color: #d7e2f8;
+      }
+      .hud-sep {
+        margin: 6px 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      #prop-type-panel {
+        position: fixed;
+        top: 12px;
+        left: 348px;
+        z-index: 140;
+        width: 280px;
+        max-height: 58vh;
+        overflow: auto;
+        border-radius: 10px;
+        border: 1px solid rgba(140, 170, 230, 0.3);
+        background: rgba(8, 11, 18, 0.94);
+        color: #d8e4ff;
+        padding: 10px 12px;
+        box-sizing: border-box;
+        font-size: 12px;
+      }
+      #prop-type-panel.hidden { display: none; }
+      #prop-type-panel h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        color: #cfe0ff;
+      }
+      .prop-type-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 4px 0;
+        gap: 8px;
+      }
+      .prop-type-row label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #c5d4f2;
+      }
+      .prop-type-count {
+        color: #7f96c2;
+        font-family: Consolas, "Courier New", monospace;
       }
 
       /* Fly-mode entry overlay */
@@ -295,30 +360,44 @@
         text-transform: uppercase;
       }
     </style>
-    <script type="module" crossorigin src="/007/web/dist/assets/index-DZ1tar8l.js"></script>
+    <script type="module" crossorigin src="/007/web/dist/assets/index-CCjNqRif.js"></script>
   </head>
   <body>
     <div id="app"></div>
     <div class="hud" id="hud">
-      GoldenEye Runway (phase 1)<br />
-      1: room mesh (bg)<br />
-      2: stan polygons<br />
-      3: pads<br />
-      4: portals<br />
-      5: wireframe<br />
-      6: grid<br />
-      0: map objects (props)<br />
-      7: atlas viewer<br />
-      8: toggle textures / flat colours<br />
-      9: room labels<br />
-      R: toggle remaster (PBR)<br />
-      G: fog (hazy / gameplay / off)<br />
-      L: lighting panel<br />
-      H: light helpers<br />
-      WASD / Arrows: fly camera<br />
-      F / click: enter fly mode<br />
-      Esc: exit fly mode<br />
+      <div class="hud-title">GoldenEye Runway Viewer</div>
+      <div class="hud-grid">
+        <span class="hud-key">WASD / Arrows</span><span class="hud-val">fly camera</span>
+        <span class="hud-key">F / Click</span><span class="hud-val">enter fly mode</span>
+        <span class="hud-key">Esc</span><span class="hud-val">exit fly / close popups</span>
+      </div>
+      <div class="hud-sep"></div>
+      <div class="hud-grid">
+        <span class="hud-key">1</span><span class="hud-val">bg mesh</span>
+        <span class="hud-key">2</span><span class="hud-val">stan polygons</span>
+        <span class="hud-key">3</span><span class="hud-val">pads</span>
+        <span class="hud-key">4</span><span class="hud-val">portals</span>
+        <span class="hud-key">0</span><span class="hud-val">props layer</span>
+        <span class="hud-key">P</span><span class="hud-val">prop type filters</span>
+      </div>
+      <div class="hud-sep"></div>
+      <div class="hud-grid">
+        <span class="hud-key">5</span><span class="hud-val">wireframe</span>
+        <span class="hud-key">6</span><span class="hud-val">grid</span>
+        <span class="hud-key">7</span><span class="hud-val">atlas viewer</span>
+        <span class="hud-key">8</span><span class="hud-val">textures / flat</span>
+        <span class="hud-key">9</span><span class="hud-val">room labels</span>
+        <span class="hud-key">R</span><span class="hud-val">remaster PBR</span>
+        <span class="hud-key">G</span><span class="hud-val">fog mode</span>
+        <span class="hud-key">L</span><span class="hud-val">lighting panel</span>
+        <span class="hud-key">H</span><span class="hud-val">light helpers</span>
+      </div>
       <span id="fly-hint"></span>
+    </div>
+
+    <div id="prop-type-panel" class="hidden">
+      <h3>Prop Type Filters</h3>
+      <div id="prop-type-list"></div>
     </div>
 
     <!-- Fly-mode entry overlay — hidden while pointer is locked -->
