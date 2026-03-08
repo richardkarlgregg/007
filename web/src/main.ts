@@ -224,6 +224,12 @@ async function bootstrap(): Promise<void> {
   let bgMesh: THREE.Object3D = useAtlas ? atlasBgMesh! : flatBgMesh;
   scene.add(bgMesh);
 
+  // Track user-requested visibility separately from the visibility we may
+  // temporarily clear for remaster mode.  bgMesh itself can be atlasBgMesh,
+  // so reading bgMesh.visible after hiding the atlas for remaster would
+  // return false and break the R-key toggle.
+  let bgVisible = true;
+
   function hasRemasterLayers(): boolean {
     const hasOverrides = Boolean(pbrOverrideGroup && pbrOverrideGroup.children.length > 0);
     const hasPlaceholders = Boolean(remasterPlaceholderGroup && remasterPlaceholderGroup.children.length > 0);
@@ -235,14 +241,16 @@ async function bootstrap(): Promise<void> {
       hasRemasterLayers() &&
       pbrEnabled &&
       useAtlas &&
-      bgMesh.visible
+      bgVisible
     );
 
+    // Always drive actual visibility from bgVisible so the atlas is never
+    // permanently lost.  In remaster mode hide atlas so placeholders show.
     if (atlasBgMesh) {
-      // Keep original atlas visible in atlas mode; remaster layers render on top.
-      // This avoids a blank scene if remaster layers fail or are still loading.
-      atlasBgMesh.visible = useAtlas && bgMesh.visible;
+      atlasBgMesh.visible = useAtlas && bgVisible && !showRemaster;
     }
+    // flatBgMesh is shown when not in atlas mode.
+    flatBgMesh.visible = !useAtlas && bgVisible;
     if (pbrOverrideGroup) pbrOverrideGroup.visible = showRemaster;
     if (remasterPlaceholderGroup) remasterPlaceholderGroup.visible = showRemaster;
   }
@@ -536,7 +544,7 @@ async function bootstrap(): Promise<void> {
 
   function refreshLightingMode(): void {
     // Remaster lighting is active only when PBR overrides are actually visible.
-    const remasterActive = Boolean(hasRemasterLayers() && pbrEnabled && useAtlas && bgMesh.visible);
+    const remasterActive = Boolean(hasRemasterLayers() && pbrEnabled && useAtlas && bgVisible);
     applyLightingMode(remasterActive ? "remaster" : "n64");
   }
   refreshLightingMode();
@@ -871,7 +879,7 @@ async function bootstrap(): Promise<void> {
     } else {
       return; // pointer is locked — ignore clicks inside fly mode
     }
-    if (!bgMesh.visible) return;
+    if (!bgVisible) return;
     const rect = renderer.domElement.getBoundingClientRect();
     pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -901,7 +909,7 @@ async function bootstrap(): Promise<void> {
 
   window.addEventListener("keydown", (event) => {
     if (event.key === "1") {
-      bgMesh.visible = !bgMesh.visible;
+      bgVisible = !bgVisible;
       syncRemasterLayers();
       refreshLightingMode();
     } else if (event.key === "2") {
@@ -949,9 +957,7 @@ async function bootstrap(): Promise<void> {
         useAtlas = !useAtlas;
         const next = useAtlas ? atlasBgMesh : flatBgMesh;
         const prev = useAtlas ? flatBgMesh : atlasBgMesh;
-        const wasVisible = bgMesh.visible;
         prev.visible = false;
-        next.visible = wasVisible;
         if (!scene.children.includes(next)) {
           scene.add(next);
         }
