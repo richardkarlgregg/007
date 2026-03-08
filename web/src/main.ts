@@ -188,6 +188,7 @@ async function bootstrap(): Promise<void> {
   const stage = await loadStageData(stageDataPath);
 
   let atlasPath = "";
+  let atlasTextureForProps: THREE.Texture | null = null;
   // Flat-colour mesh is always built; atlas mesh is built when atlas data exists.
   const flatBgMesh: THREE.Object3D = buildBgMesh(stage.roomTriangles);
   let atlasBgMesh: THREE.Object3D | null = null;
@@ -206,6 +207,7 @@ async function bootstrap(): Promise<void> {
   if (stage.atlas) {
     atlasPath = `${import.meta.env.BASE_URL}data/stages/${stage.atlas.atlasImage}`;
     const atlasTexture = await new THREE.TextureLoader().loadAsync(atlasPath);
+    atlasTextureForProps = atlasTexture;
     // Atlas mesh always covers all materials.  PBR layer sits on top via
     // polygon offset so toggling it off cleanly reveals the N64 texture below.
     // Pass fogUniforms so the shader can update fog live via the G key.
@@ -571,7 +573,10 @@ async function bootstrap(): Promise<void> {
       {
         showLabels: false,
         stageLevelScale: stage.stageLevelScale ?? 1.0,
-        groundTriangles: stage.roomTriangles ?? []
+        stanTiles: stage.stanTiles ?? [],
+        atlas: stage.atlas,
+        atlasTexture: atlasTextureForProps ?? undefined,
+        fogUniforms
       },
       stage.propModels ?? {}
     );

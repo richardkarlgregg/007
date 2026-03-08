@@ -776,8 +776,14 @@ export interface PropLayerOptions {
    * in model units that include this factor at runtime.
    */
   stageLevelScale?: number;
-  /** Optional room triangles for source-like floor placement at pad X/Z. */
-  groundTriangles?: RoomTriangle[];
+  /** Optional stan walk tiles (source-like Y placement surface). */
+  stanTiles?: StanTile[];
+  /** Optional atlas manifest for textured prop rendering. */
+  atlas?: AtlasManifest;
+  /** Atlas texture loaded from atlas.atlasImage. */
+  atlasTexture?: THREE.Texture;
+  /** Shared fog uniforms (so G-key toggles affect props too). */
+  fogUniforms?: FogUniforms;
 }
 
 /** Prop types for which primaryIndex is a model index into propModelNames. */
@@ -791,11 +797,17 @@ const PROP_TYPES_WITH_MODEL = new Set(["StandardProp", "SingleMonitor"]);
  */
 function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
   const positions: number[] = [];
+  const materialIds: number[] = [];
+  const texelUvs: number[] = [];
+  const vertexColorsRaw: number[] = [];
   const colors: number[] = [];
 
   for (const tri of geo.triangles) {
     for (const v of [tri.a, tri.b, tri.c]) {
       positions.push(v.x, v.y, v.z);
+      materialIds.push(tri.materialId);
+      texelUvs.push(v.u / 32.0, v.v / 32.0);
+      vertexColorsRaw.push(v.r, v.g, v.b);
       // N64 vertex colors are 0-255; normalize to 0-1 for Three.js
       colors.push(v.r / 255, v.g / 255, v.b / 255);
     }
@@ -803,6 +815,11 @@ function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
 
   const bufGeo = new THREE.BufferGeometry();
   bufGeo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  // Atlas shader attributes:
+  bufGeo.setAttribute("aMaterialId", new THREE.Float32BufferAttribute(materialIds, 1));
+  bufGeo.setAttribute("aTexelUV", new THREE.Float32BufferAttribute(texelUvs, 2));
+  bufGeo.setAttribute("aVertexColor", new THREE.Float32BufferAttribute(vertexColorsRaw, 3));
+  // Fallback MeshBasicMaterial attribute:
   bufGeo.setAttribute("color",    new THREE.Float32BufferAttribute(colors, 3));
   bufGeo.computeVertexNormals();
   return bufGeo;
@@ -816,7 +833,8 @@ export function buildPropsLayer(
   propModels: Record<string, PropModelGeometry> = {}
 ): THREE.Group {
   const stageLevelScale = options.stageLevelScale ?? 1.0;
-  const groundTriangles = options.groundTriangles ?? [];
+  const stanTiles = options.stanTiles ?? [];
+  const fogUniforms = options.fogUniforms ?? makeFogUniforms();
 
   function barycentricYAtXZ(
     px: number,
@@ -834,13 +852,25 @@ export function buildPropsLayer(
     return (w1 * a.y) + (w2 * b.y) + (w3 * c.y);
   }
 
-  function sampleGroundY(x: number, z: number): number | null {
+  function sampleGroundYFromStan(x: number, z: number, targetY: number): number | null {
     let best: number | null = null;
-    for (const tri of groundTriangles) {
-      if (tri.isSecondary) continue;
-      const y = barycentricYAtXZ(x, z, tri.a, tri.b, tri.c);
-      if (y === null) continue;
-      if (best === null || y > best) best = y;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (const tile of stanTiles) {
+      // stanGetPositionYValue operates on stand tiles, not render triangles.
+      // Triangulate tile polygon as a fan around point[0].
+      if (!tile.points || tile.points.length < 3) continue;
+      const p0 = tile.points[0];
+      for (let i = 1; i + 1 < tile.points.length; i += 1) {
+        const p1 = tile.points[i];
+        const p2 = tile.points[i + 1];
+        const y = barycentricYAtXZ(x, z, p0, p1, p2);
+        if (y === null) continue;
+        const delta = Math.abs(y - targetY);
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          best = y;
+        }
+      }
     }
     return best;
   }
@@ -848,9 +878,62 @@ export function buildPropsLayer(
   const group = new THREE.Group();
   group.name = "props";
 
+  interface SupportSurface {
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+    topY: number;
+  }
+  const supportSurfaces: SupportSurface[] = [];
+
   // Cache decoded prop geometries so each model binary is only parsed once.
   const modelGeoCache = new Map<string, THREE.BufferGeometry | null>();
-  const modelMatCache = new Map<string, THREE.MeshBasicMaterial>();
+  const modelMatCache = new Map<string, THREE.Material>();
+
+  let propAtlasMaterial: THREE.ShaderMaterial | null = null;
+  if (options.atlas && options.atlasTexture) {
+    const LOOKUP_WIDTH = 2500;
+    const lookupData = new Float32Array(LOOKUP_WIDTH * 4);
+    for (const [idStr, item] of Object.entries(options.atlas.items)) {
+      const id = parseInt(idStr, 10);
+      if (id >= 0 && id < LOOKUP_WIDTH) {
+        lookupData[id * 4 + 0] = item.x;
+        lookupData[id * 4 + 1] = item.y;
+        lookupData[id * 4 + 2] = item.width;
+        lookupData[id * 4 + 3] = item.height;
+      }
+    }
+    const lookupTex = new THREE.DataTexture(lookupData, LOOKUP_WIDTH, 1, THREE.RGBAFormat, THREE.FloatType);
+    lookupTex.magFilter = THREE.NearestFilter;
+    lookupTex.minFilter = THREE.NearestFilter;
+    lookupTex.needsUpdate = true;
+
+    options.atlasTexture.flipY = false;
+    options.atlasTexture.wrapS = THREE.ClampToEdgeWrapping;
+    options.atlasTexture.wrapT = THREE.ClampToEdgeWrapping;
+    options.atlasTexture.magFilter = THREE.NearestFilter;
+    options.atlasTexture.minFilter = THREE.NearestFilter;
+    options.atlasTexture.needsUpdate = true;
+
+    propAtlasMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        ...THREE.UniformsLib.lights,
+        uAtlas:       { value: options.atlasTexture },
+        uLookup:      { value: lookupTex },
+        uAtlasSize:   { value: new THREE.Vector2(options.atlas.width, options.atlas.height) },
+        uLookupWidth: { value: LOOKUP_WIDTH },
+        uFogNear:     fogUniforms.uFogNear,
+        uFogFar:      fogUniforms.uFogFar,
+        uFogColor:    fogUniforms.uFogColor,
+        uFogEnabled:  fogUniforms.uFogEnabled
+      },
+      vertexShader: ATLAS_VERTEX_SHADER,
+      fragmentShader: ATLAS_FRAGMENT_SHADER,
+      side: THREE.DoubleSide,
+      lights: true
+    });
+  }
 
   function getPropGeo(modelName: string): THREE.BufferGeometry | null {
     if (!modelGeoCache.has(modelName)) {
@@ -860,7 +943,8 @@ export function buildPropsLayer(
     return modelGeoCache.get(modelName)!;
   }
 
-  function getPropMat(modelName: string): THREE.MeshBasicMaterial {
+  function getPropMat(modelName: string): THREE.Material {
+    if (propAtlasMaterial) return propAtlasMaterial;
     if (!modelMatCache.has(modelName)) {
       modelMatCache.set(
         modelName,
@@ -927,12 +1011,80 @@ export function buildPropsLayer(
     if (realGeo && modelName) {
       const model = propModels[modelName];
       const renderScale = (placement.renderScale ?? 0.1) * stageLevelScale;
-      const groundY = sampleGroundY(pad.position.x, pad.position.z);
-      if (groundY !== null) {
-        // Match game intent from sub_GAME_7F04088C:
-        // place object relative to floor using model Y-min and small +4 lift.
-        mesh.position.y = groundY - (model.bounds.min.y * renderScale) + (4 * stageLevelScale);
+      const up = new THREE.Vector3(pad.up.x, pad.up.y, pad.up.z);
+      if (up.lengthSq() < 1e-8) up.set(0, 1, 0);
+      up.normalize();
+      const objectFlags = placement.objectFlags ?? 0;
+
+      // Source-style placement branches from sub_GAME_7F04088C:
+      //  flags&4 => in-air upside-down offset by bbox ymax
+      //  flags&8 => in-air offset by bbox ymin
+      //  else    => fall-to-ground using stanGetPositionYValue + bbox ymin + 4
+      if (objectFlags & 0x00000004) {
+        mesh.position.addScaledVector(up, -(model.bounds.max.y * renderScale));
+      } else if (objectFlags & 0x00000008) {
+        mesh.position.addScaledVector(up, -(model.bounds.min.y * renderScale));
+      } else {
+        const groundY = sampleGroundYFromStan(pad.position.x, pad.position.z, pad.position.y);
+        const offset = -(model.bounds.min.y * renderScale);
+        mesh.position.x += up.x * offset;
+        mesh.position.z += up.z * offset;
+        if (groundY !== null) {
+          let baseY = groundY;
+          // Source-inspired support resolution: GE does an extra collision/object
+          // check (sub_GAME_7F03FAB0 + chraiGetCollisionBounds) before finalizing Y.
+          // Approximate by snapping to the highest previously placed support surface
+          // under this X/Z when that support is between ground and pad target height.
+          if (pad.position.y > groundY) {
+            let bestSupportTop = Number.NEGATIVE_INFINITY;
+            for (const s of supportSurfaces) {
+              if (pad.position.x < s.minX || pad.position.x > s.maxX) continue;
+              if (pad.position.z < s.minZ || pad.position.z > s.maxZ) continue;
+              if (s.topY < groundY) continue;
+              if (s.topY > pad.position.y + 40) continue;
+              if (s.topY > bestSupportTop) bestSupportTop = s.topY;
+            }
+            if (bestSupportTop > Number.NEGATIVE_INFINITY) {
+              baseY = bestSupportTop;
+            }
+          }
+          mesh.position.y = baseY + (up.y * offset) + (4 * stageLevelScale);
+        } else {
+          mesh.position.y += up.y * offset;
+        }
       }
+
+      // Register support footprint for subsequent props (e.g. keyboard on desk).
+      // Use a conservative world-space AABB footprint from rotated local bounds.
+      const yaw = mesh.rotation.y;
+      const c = Math.cos(yaw);
+      const s = Math.sin(yaw);
+      const x0 = model.bounds.min.x * renderScale;
+      const x1 = model.bounds.max.x * renderScale;
+      const z0 = model.bounds.min.z * renderScale;
+      const z1 = model.bounds.max.z * renderScale;
+      const corners: Array<{ x: number; z: number }> = [
+        { x: x0, z: z0 }, { x: x0, z: z1 }, { x: x1, z: z0 }, { x: x1, z: z1 }
+      ];
+      let minX = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let minZ = Number.POSITIVE_INFINITY;
+      let maxZ = Number.NEGATIVE_INFINITY;
+      for (const p of corners) {
+        const wx = (p.x * c) - (p.z * s) + mesh.position.x;
+        const wz = (p.x * s) + (p.z * c) + mesh.position.z;
+        if (wx < minX) minX = wx;
+        if (wx > maxX) maxX = wx;
+        if (wz < minZ) minZ = wz;
+        if (wz > maxZ) maxZ = wz;
+      }
+      supportSurfaces.push({
+        minX,
+        maxX,
+        minZ,
+        maxZ,
+        topY: mesh.position.y + (model.bounds.max.y * renderScale)
+      });
     }
 
     // Apply yaw from the pad orientation vector (x,z components give heading).
@@ -947,6 +1099,7 @@ export function buildPropsLayer(
       propType:       placement.type,
       propPadIndex:   placement.padIndex,
       propPrimaryIndex: placement.primaryIndex,
+      propObjectFlags: placement.objectFlags ?? 0,
       propModelName:  modelName ?? `model_${placement.primaryIndex}`,
       hasRealGeometry: realGeo !== null,
     };

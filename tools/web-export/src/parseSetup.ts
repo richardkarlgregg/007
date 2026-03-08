@@ -49,6 +49,8 @@ export interface PropPlacement {
    * The effective render scale = PitemZ_entries[primaryIndex].scale × (extraScale / 256).
    */
   extraScale: number;
+  /** ObjectRecord.flags bitfield (third word in propDefs entry). */
+  objectFlags: number;
 }
 
 /** One entry from propItemModelFileRecord.inc.c (PitemZ_entries[]). */
@@ -112,7 +114,7 @@ export function parseSetupPropdefs(path: string): PropPlacement[] {
   // Each data line begins with _mkword(EXTRASCALE, _mkshort(0, TYPEID)) followed
   // by _mkword(PRIMARYINDEX, PADINDEX).  Capture all three integer arguments.
   const entryRegex =
-    /\/\* Type = (\w+); index = (\d+) \*\/[^\r\n]*[\r\n]+\s*_mkword\((\d+),\s*_mkshort\(0,\s*\d+\)\)\s*,\s*_mkword\((\d+),\s*(\d+)\)/g;
+    /\/\* Type = (\w+); index = (\d+) \*\/[^\r\n]*[\r\n]+\s*_mkword\((\d+),\s*_mkshort\(0,\s*\d+\)\)\s*,\s*_mkword\((\d+),\s*(\d+)\)\s*,\s*([^\s,]+)/g;
 
   let match: RegExpExecArray | null = null;
   while ((match = entryRegex.exec(block)) !== null) {
@@ -123,11 +125,12 @@ export function parseSetupPropdefs(path: string): PropPlacement[] {
     const extraScale = Number.parseInt(match[3], 10);
     const primaryIndex = Number.parseInt(match[4], 10);
     const padIndex = Number.parseInt(match[5], 10);
+    const objectFlags = Number.parseInt(match[6], 0);
 
     // Pad indices > 9999 are virtual pads (e.g. intro camera positions) — skip.
     if (padIndex > 9999) continue;
 
-    results.push({ index, type, padIndex, primaryIndex, extraScale });
+    results.push({ index, type, padIndex, primaryIndex, extraScale, objectFlags });
   }
 
   return results;

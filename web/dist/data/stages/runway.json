@@ -157682,343 +157682,392 @@
       "type": "Guard",
       "padIndex": 110,
       "primaryIndex": 23,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 21,
       "type": "Guard",
       "padIndex": 102,
       "primaryIndex": 24,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 22,
       "type": "Guard",
       "padIndex": 26,
       "primaryIndex": 25,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 23,
       "type": "Guard",
       "padIndex": 27,
       "primaryIndex": 26,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 24,
       "type": "Guard",
       "padIndex": 28,
       "primaryIndex": 27,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 25,
       "type": "Guard",
       "padIndex": 29,
       "primaryIndex": 28,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 26,
       "type": "Guard",
       "padIndex": 30,
       "primaryIndex": 29,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 27,
       "type": "Guard",
       "padIndex": 31,
       "primaryIndex": 30,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 28,
       "type": "Guard",
       "padIndex": 21,
       "primaryIndex": 20,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 29,
       "type": "Guard",
       "padIndex": 20,
       "primaryIndex": 21,
-      "extraScale": 0
+      "extraScale": 0,
+      "objectFlags": null
     },
     {
       "index": 30,
       "type": "Collectable",
       "padIndex": 0,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 31,
       "type": "Collectable",
       "padIndex": 1,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 32,
       "type": "Collectable",
       "padIndex": 2,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 33,
       "type": "Collectable",
       "padIndex": 3,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 34,
       "type": "Collectable",
       "padIndex": 4,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 35,
       "type": "Collectable",
       "padIndex": 5,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 36,
       "type": "Collectable",
       "padIndex": 6,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 37,
       "type": "Collectable",
       "padIndex": 7,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 38,
       "type": "Collectable",
       "padIndex": 8,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 39,
       "type": "Collectable",
       "padIndex": 9,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 40,
       "type": "Collectable",
       "padIndex": 10,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 41,
       "type": "Collectable",
       "padIndex": 11,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 42,
       "type": "Collectable",
       "padIndex": 12,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 43,
       "type": "Collectable",
       "padIndex": 13,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 44,
       "type": "Collectable",
       "padIndex": 14,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 45,
       "type": "Collectable",
       "padIndex": 15,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 46,
       "type": "Collectable",
       "padIndex": 16,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 47,
       "type": "Collectable",
       "padIndex": 17,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 48,
       "type": "Collectable",
       "padIndex": 18,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 49,
       "type": "Collectable",
       "padIndex": 19,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 50,
       "type": "Collectable",
       "padIndex": 20,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 51,
       "type": "Collectable",
       "padIndex": 21,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 52,
       "type": "Collectable",
       "padIndex": 22,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 53,
       "type": "Collectable",
       "padIndex": 23,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 54,
       "type": "Collectable",
       "padIndex": 24,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 55,
       "type": "Collectable",
       "padIndex": 25,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 56,
       "type": "Collectable",
       "padIndex": 26,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 57,
       "type": "Collectable",
       "padIndex": 27,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 58,
       "type": "Collectable",
       "padIndex": 28,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 59,
       "type": "Collectable",
       "padIndex": 29,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 60,
       "type": "Collectable",
       "padIndex": 30,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 61,
       "type": "Collectable",
       "padIndex": 31,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 62,
       "type": "Collectable",
       "padIndex": 39,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 63,
       "type": "Collectable",
       "padIndex": 40,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 64,
       "type": "Collectable",
       "padIndex": 41,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 65,
       "type": "Collectable",
       "padIndex": 42,
       "primaryIndex": 184,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 16384
     },
     {
       "index": 97,
       "type": "AmmoBox",
       "padIndex": 3,
       "primaryIndex": 5,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 1
     },
     {
       "index": 98,
       "type": "AmmoBox",
       "padIndex": 25,
       "primaryIndex": 5,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 1
     },
     {
       "index": 99,
       "type": "AmmoBox",
       "padIndex": 24,
       "primaryIndex": 4,
-      "extraScale": 128
+      "extraScale": 128,
+      "objectFlags": 1
     },
     {
       "index": 102,
@@ -158026,6 +158075,7 @@
       "padIndex": 81,
       "primaryIndex": 50,
       "extraScale": 256,
+      "objectFlags": 417,
       "renderScale": 0.1
     },
     {
@@ -158034,6 +158084,7 @@
       "padIndex": 79,
       "primaryIndex": 85,
       "extraScale": 332,
+      "objectFlags": 481,
       "renderScale": 0.1296875
     },
     {
@@ -158042,6 +158093,7 @@
       "padIndex": 77,
       "primaryIndex": 75,
       "extraScale": 256,
+      "objectFlags": 268435457,
       "renderScale": 0.1
     },
     {
@@ -158050,6 +158102,7 @@
       "padIndex": 78,
       "primaryIndex": 45,
       "extraScale": 256,
+      "objectFlags": 1,
       "renderScale": 0.1
     },
     {
@@ -158057,7 +158110,8 @@
       "type": "Key",
       "padIndex": 80,
       "primaryIndex": 243,
-      "extraScale": 384
+      "extraScale": 384,
+      "objectFlags": 1
     },
     {
       "index": 109,
@@ -158065,6 +158119,7 @@
       "padIndex": 82,
       "primaryIndex": 43,
       "extraScale": 256,
+      "objectFlags": 257,
       "renderScale": 0.1
     },
     {
@@ -158073,6 +158128,7 @@
       "padIndex": 83,
       "primaryIndex": 43,
       "extraScale": 256,
+      "objectFlags": 257,
       "renderScale": 0.1
     },
     {
@@ -158081,6 +158137,7 @@
       "padIndex": 84,
       "primaryIndex": 43,
       "extraScale": 256,
+      "objectFlags": 257,
       "renderScale": 0.1
     },
     {
@@ -158089,6 +158146,7 @@
       "padIndex": 72,
       "primaryIndex": 62,
       "extraScale": 256,
+      "objectFlags": 257,
       "renderScale": 0.1
     },
     {
@@ -158097,6 +158155,7 @@
       "padIndex": 73,
       "primaryIndex": 62,
       "extraScale": 256,
+      "objectFlags": 257,
       "renderScale": 0.1
     },
     {
@@ -158105,6 +158164,7 @@
       "padIndex": 74,
       "primaryIndex": 62,
       "extraScale": 256,
+      "objectFlags": 257,
       "renderScale": 0.1
     },
     {
@@ -158113,6 +158173,7 @@
       "padIndex": 75,
       "primaryIndex": 62,
       "extraScale": 256,
+      "objectFlags": 257,
       "renderScale": 0.1
     },
     {
@@ -158121,6 +158182,7 @@
       "padIndex": 32,
       "primaryIndex": 114,
       "extraScale": 179,
+      "objectFlags": 257,
       "renderScale": 0.06992187500000001
     },
     {
@@ -158129,6 +158191,7 @@
       "padIndex": 33,
       "primaryIndex": 114,
       "extraScale": 179,
+      "objectFlags": 257,
       "renderScale": 0.06992187500000001
     },
     {
@@ -158137,6 +158200,7 @@
       "padIndex": 34,
       "primaryIndex": 114,
       "extraScale": 179,
+      "objectFlags": 257,
       "renderScale": 0.06992187500000001
     },
     {
@@ -158144,49 +158208,56 @@
       "type": "Tank",
       "padIndex": 44,
       "primaryIndex": 288,
-      "extraScale": 276
+      "extraScale": 276,
+      "objectFlags": 131329
     },
     {
       "index": 121,
       "type": "Door",
       "padIndex": 6,
       "primaryIndex": 155,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 402657280
     },
     {
       "index": 122,
       "type": "Door",
       "padIndex": 7,
       "primaryIndex": 155,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 939528192
     },
     {
       "index": 124,
       "type": "Door",
       "padIndex": 10,
       "primaryIndex": 155,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 939524096
     },
     {
       "index": 125,
       "type": "Door",
       "padIndex": 8,
       "primaryIndex": 149,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 268435456
     },
     {
       "index": 126,
       "type": "Door",
       "padIndex": 9,
       "primaryIndex": 149,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 268435456
     },
     {
       "index": 128,
       "type": "Door",
       "padIndex": 11,
       "primaryIndex": 149,
-      "extraScale": 256
+      "extraScale": 256,
+      "objectFlags": 268435456
     }
   ],
   "propModelNames": [

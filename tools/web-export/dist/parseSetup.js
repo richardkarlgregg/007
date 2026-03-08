@@ -57,7 +57,7 @@ export function parseSetupPropdefs(path) {
     const results = [];
     // Each data line begins with _mkword(EXTRASCALE, _mkshort(0, TYPEID)) followed
     // by _mkword(PRIMARYINDEX, PADINDEX).  Capture all three integer arguments.
-    const entryRegex = /\/\* Type = (\w+); index = (\d+) \*\/[^\r\n]*[\r\n]+\s*_mkword\((\d+),\s*_mkshort\(0,\s*\d+\)\)\s*,\s*_mkword\((\d+),\s*(\d+)\)/g;
+    const entryRegex = /\/\* Type = (\w+); index = (\d+) \*\/[^\r\n]*[\r\n]+\s*_mkword\((\d+),\s*_mkshort\(0,\s*\d+\)\)\s*,\s*_mkword\((\d+),\s*(\d+)\)\s*,\s*([^\s,]+)/g;
     let match = null;
     while ((match = entryRegex.exec(block)) !== null) {
         const type = match[1];
@@ -67,10 +67,11 @@ export function parseSetupPropdefs(path) {
         const extraScale = Number.parseInt(match[3], 10);
         const primaryIndex = Number.parseInt(match[4], 10);
         const padIndex = Number.parseInt(match[5], 10);
+        const objectFlags = Number.parseInt(match[6], 0);
         // Pad indices > 9999 are virtual pads (e.g. intro camera positions) — skip.
         if (padIndex > 9999)
             continue;
-        results.push({ index, type, padIndex, primaryIndex, extraScale });
+        results.push({ index, type, padIndex, primaryIndex, extraScale, objectFlags });
     }
     return results;
 }

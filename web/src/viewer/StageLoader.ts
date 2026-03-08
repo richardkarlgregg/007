@@ -97,6 +97,8 @@ export interface PropPlacement {
    * e.g. 256 → 1.0 (identity), 332 → ~1.297.
    */
   extraScale: number;
+  /** ObjectRecord.flags bitfield from propDefs (third data word). */
+  objectFlags?: number;
   /**
    * Pre-computed effective render scale = PitemZ_entries[primaryIndex].scale × (extraScale / 256).
    * Only present on StandardProp and SingleMonitor placements that have a decoded model.
