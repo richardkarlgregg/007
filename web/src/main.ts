@@ -568,7 +568,11 @@ async function bootstrap(): Promise<void> {
       stage.propPlacements,
       stage.pads,
       stage.propModelNames ?? [],
-      { showLabels: false },
+      {
+        showLabels: false,
+        stageLevelScale: stage.stageLevelScale ?? 1.0,
+        groundTriangles: stage.roomTriangles ?? []
+      },
       stage.propModels ?? {}
     );
     propsLayer.visible = false;

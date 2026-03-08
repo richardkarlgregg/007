@@ -155,6 +155,11 @@ export interface PropModelGeometry {
   triangles: PropTriangle[];
   /** Unique 1-based material IDs used by this model. */
   materialIds: number[];
+  /** Local-space bounds from decoded geometry, used for source-accurate placement. */
+  bounds: {
+    min: { x: number; y: number; z: number };
+    max: { x: number; y: number; z: number };
+  };
 }
 
 // ─── GFX display-list decoder ────────────────────────────────────────────────
@@ -348,9 +353,30 @@ export function parsePropModel(binPath: string): PropModelGeometry | null {
 
   if (allTriangles.length === 0) return null;
 
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const tri of allTriangles) {
+    for (const v of [tri.a, tri.b, tri.c]) {
+      if (v.x < minX) minX = v.x;
+      if (v.y < minY) minY = v.y;
+      if (v.z < minZ) minZ = v.z;
+      if (v.x > maxX) maxX = v.x;
+      if (v.y > maxY) maxY = v.y;
+      if (v.z > maxZ) maxZ = v.z;
+    }
+  }
+
   return {
     triangles:   allTriangles,
     materialIds: [...materialIdSet].sort((a, b) => a - b),
+    bounds: {
+      min: { x: minX, y: minY, z: minZ },
+      max: { x: maxX, y: maxY, z: maxZ },
+    },
   };
 }
 

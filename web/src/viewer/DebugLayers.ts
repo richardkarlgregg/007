@@ -771,6 +771,13 @@ function makePropLabelSprite(label: string, color: number): THREE.Sprite {
 export interface PropLayerOptions {
   /** When true, draw a small name label above each marker. Default false. */
   showLabels?: boolean;
+  /**
+   * Stage-level scale from src/game/bg.c (room_data_float1). Props are authored
+   * in model units that include this factor at runtime.
+   */
+  stageLevelScale?: number;
+  /** Optional room triangles for source-like floor placement at pad X/Z. */
+  groundTriangles?: RoomTriangle[];
 }
 
 /** Prop types for which primaryIndex is a model index into propModelNames. */
@@ -808,6 +815,36 @@ export function buildPropsLayer(
   options: PropLayerOptions = {},
   propModels: Record<string, PropModelGeometry> = {}
 ): THREE.Group {
+  const stageLevelScale = options.stageLevelScale ?? 1.0;
+  const groundTriangles = options.groundTriangles ?? [];
+
+  function barycentricYAtXZ(
+    px: number,
+    pz: number,
+    a: { x: number; y: number; z: number },
+    b: { x: number; y: number; z: number },
+    c: { x: number; y: number; z: number }
+  ): number | null {
+    const den = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+    if (Math.abs(den) < 1e-8) return null;
+    const w1 = ((b.z - c.z) * (px - c.x) + (c.x - b.x) * (pz - c.z)) / den;
+    const w2 = ((c.z - a.z) * (px - c.x) + (a.x - c.x) * (pz - c.z)) / den;
+    const w3 = 1 - w1 - w2;
+    if (w1 < -1e-6 || w2 < -1e-6 || w3 < -1e-6) return null;
+    return (w1 * a.y) + (w2 * b.y) + (w3 * c.y);
+  }
+
+  function sampleGroundY(x: number, z: number): number | null {
+    let best: number | null = null;
+    for (const tri of groundTriangles) {
+      if (tri.isSecondary) continue;
+      const y = barycentricYAtXZ(x, z, tri.a, tri.b, tri.c);
+      if (y === null) continue;
+      if (best === null || y > best) best = y;
+    }
+    return best;
+  }
+
   const group = new THREE.Group();
   group.name = "props";
 
@@ -875,7 +912,7 @@ export function buildPropsLayer(
       // Render using the pre-computed renderScale from the export pipeline.
       // renderScale = PitemZ_entries[primaryIndex].scale × (extraScale / 256)
       // This replicates the game's modelSetScale() call chain exactly.
-      const renderScale = placement.renderScale ?? 0.1;
+      const renderScale = (placement.renderScale ?? 0.1) * stageLevelScale;
       mesh = new THREE.Mesh(realGeo, getPropMat(modelName));
       mesh.scale.setScalar(renderScale);
     } else {
@@ -887,6 +924,16 @@ export function buildPropsLayer(
     }
 
     mesh.position.set(pad.position.x, pad.position.y, pad.position.z);
+    if (realGeo && modelName) {
+      const model = propModels[modelName];
+      const renderScale = (placement.renderScale ?? 0.1) * stageLevelScale;
+      const groundY = sampleGroundY(pad.position.x, pad.position.z);
+      if (groundY !== null) {
+        // Match game intent from sub_GAME_7F04088C:
+        // place object relative to floor using model Y-min and small +4 lift.
+        mesh.position.y = groundY - (model.bounds.min.y * renderScale) + (4 * stageLevelScale);
+      }
+    }
 
     // Apply yaw from the pad orientation vector (x,z components give heading).
     const ori = pad.orientation;

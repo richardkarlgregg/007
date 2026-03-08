@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildRunwayAtlas, type AtlasManifest } from "./buildRunwayAtlas.js";
@@ -9,6 +9,8 @@ import { parseStanFile } from "./parseStan.js";
 
 interface StageOutput {
   stage: string;
+  /** src/game/bg.c levelinfotable[].levelscale for this stage. */
+  stageLevelScale: number;
   sourceFiles: {
     bg: string;
     setup: string;
@@ -42,6 +44,18 @@ function requireFile(filePath: string): void {
   }
 }
 
+function parseRunwayLevelScale(bgSourcePath: string): number {
+  const src = existsSync(bgSourcePath) ? readFileSync(bgSourcePath, "utf8") : "";
+  for (const line of src.split(/\r?\n/)) {
+    if (!line.includes("LEVELID_RUNWAY")) continue;
+    const parts = line.split(",").map((p) => p.trim());
+    if (parts.length < 4) continue;
+    const n = Number.parseFloat(parts[3]);
+    if (Number.isFinite(n)) return n;
+  }
+  return 1.0;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "../../..");
@@ -50,20 +64,23 @@ const relativeSources = {
   bg: "assets/obseg/bg/bg_run_all_p.c",
   setup: "assets/obseg/setup/UsetuprunZ.c",
   stan: "assets/obseg/stan/Tbg_run_all_p_stanZ.c",
-  propModelNames: "assets/obseg/prop/propItemModelFileRecord.inc.c"
+  propModelNames: "assets/obseg/prop/propItemModelFileRecord.inc.c",
+  gameBg: "src/game/bg.c"
 };
 
 const sourceFiles = {
   bg: path.resolve(repoRoot, relativeSources.bg),
   setup: path.resolve(repoRoot, relativeSources.setup),
   stan: path.resolve(repoRoot, relativeSources.stan),
-  propModelNames: path.resolve(repoRoot, relativeSources.propModelNames)
+  propModelNames: path.resolve(repoRoot, relativeSources.propModelNames),
+  gameBg: path.resolve(repoRoot, relativeSources.gameBg)
 };
 
 requireFile(sourceFiles.bg);
 requireFile(sourceFiles.setup);
 requireFile(sourceFiles.stan);
 requireFile(sourceFiles.propModelNames);
+requireFile(sourceFiles.gameBg);
 
 const stanTiles = parseStanFile(sourceFiles.stan).sort((a, b) => a.id - b.id);
 // Pads are kept in original parse order so that padIndex values from propDefs[]
@@ -77,6 +94,7 @@ const propModelNames = propModelEntries.map((e) => e.name);
 const propModelScales: Record<string, number> = {};
 for (const e of propModelEntries) propModelScales[e.name] = e.scale;
 const bg = parseBgFile(sourceFiles.bg);
+const stageLevelScale = parseRunwayLevelScale(sourceFiles.gameBg);
 const portals = bg.portals.sort((a, b) => a.name.localeCompare(b.name));
 const roomCenters = bg.roomCenters.sort((a, b) => a.roomIndex - b.roomIndex);
 const roomTriangles = bg.roomTriangles;
@@ -137,6 +155,7 @@ const annotatedPlacements = propPlacements.map((p) => {
 
 const outputData: StageOutput = {
   stage: "runway",
+  stageLevelScale,
   sourceFiles: {
     bg: normalizePath(relativeSources.bg),
     setup: normalizePath(relativeSources.setup),

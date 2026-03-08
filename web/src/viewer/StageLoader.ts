@@ -130,10 +130,17 @@ export interface PropModelGeometry {
   triangles: PropTriangle[];
   /** Unique 1-based material IDs included in this model. */
   materialIds: number[];
+  /** Local-space bounds from decoded geometry. */
+  bounds: {
+    min: Vec3;
+    max: Vec3;
+  };
 }
 
 export interface StageData {
   stage: string;
+  /** src/game/bg.c levelinfotable[].levelscale for this stage. */
+  stageLevelScale?: number;
   sourceFiles: {
     bg: string;
     setup: string;
