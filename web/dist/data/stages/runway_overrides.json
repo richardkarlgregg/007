@@ -94,6 +94,19 @@
       "height":    "snow_edge_height.png",
       "alpha":     "snow_edge_alpha.png",
       "heightScale": 0
+    },
+    {
+      "name": "window_recess",
+      "_comment": "Window recess surface set. Fill in materialIds from poly inspector for runway/ground window recess polygons.",
+      "materialIds": [304],
+      "albedo":    "window_recess_basecolor.png",
+      "normal":    "window_recess_normal.png",
+      "roughness": "window_recess_roughness.png",
+      "ao":        "",
+      "metallic":  "",
+      "height":    "window_recess_height.png",
+      "alpha":     "",
+      "heightScale": 0
     }
   ]
 }

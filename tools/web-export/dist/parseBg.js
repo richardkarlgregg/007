@@ -112,7 +112,7 @@ function decodeTri4(triWord0, triWord1) {
     const tri4 = [(triWord1 >>> 24) & 0xf, (triWord1 >>> 28) & 0xf, (triWord0 >>> 12) & 0xf];
     return [tri1, tri2, tri3, tri4];
 }
-function pushTriangle(triangles, room, materialId, isSecondary, a, b, c) {
+function pushTriangle(triangles, room, materialId, isSecondary, layerAlpha, a, b, c) {
     triangles.push({
         roomIndex: room.roomIndex,
         materialId,
@@ -125,7 +125,8 @@ function pushTriangle(triangles, room, materialId, isSecondary, a, b, c) {
         uvC: { u: c.u, v: c.v },
         colA: { r: a.r, g: a.g, b: a.b },
         colB: { r: b.r, g: b.g, b: b.b },
-        colC: { r: c.r, g: c.g, b: c.b }
+        colC: { r: c.r, g: c.g, b: c.b },
+        layerAlpha
     });
 }
 function decodeRoomTrianglesFromMapping(room, mappingCompressed, arrays, isSecondary) {
@@ -152,6 +153,7 @@ function decodeRoomTrianglesFromMapping(room, mappingCompressed, arrays, isSecon
     // The no-texture combine is identified by the lower 3 bytes of word0 all
     // being 0xFF (pattern: 0xFC FF FF FF).
     let isNoTexMode = false;
+    let envAlpha = 255;
     for (let offset = 0; offset + 7 < mappingBuffer.length; offset += 8) {
         const word0 = (mappingBuffer[offset] << 24) |
             (mappingBuffer[offset + 1] << 16) |
@@ -165,6 +167,11 @@ function decodeRoomTrianglesFromMapping(room, mappingCompressed, arrays, isSecon
         // G_SETCOMBINE (0xFC): update no-texture mode flag.
         if (command === 0xfc) {
             isNoTexMode = (word0 & 0x00ffffff) === 0x00ffffff;
+            continue;
+        }
+        // G_SETENVCOLOR (0xFB) — capture per-DL alpha state used by XLU combines.
+        if (command === 0xfb) {
+            envAlpha = word1 & 0xff;
             continue;
         }
         // GE custom state command used by room display lists for material/texture selection.
@@ -207,7 +214,7 @@ function decodeRoomTrianglesFromMapping(room, mappingCompressed, arrays, isSecon
                     if (!a || !b || !c) {
                         continue;
                     }
-                    pushTriangle(triangles, room, currentMaterialId, isSecondary, a, b, c);
+                    pushTriangle(triangles, room, currentMaterialId, isSecondary, envAlpha / 255, a, b, c);
                 }
             }
             continue;
@@ -224,7 +231,7 @@ function decodeRoomTrianglesFromMapping(room, mappingCompressed, arrays, isSecon
                     const b = cache[i1];
                     const c = cache[i2];
                     if (a && b && c) {
-                        pushTriangle(triangles, room, currentMaterialId, isSecondary, a, b, c);
+                        pushTriangle(triangles, room, currentMaterialId, isSecondary, envAlpha / 255, a, b, c);
                     }
                 }
             }

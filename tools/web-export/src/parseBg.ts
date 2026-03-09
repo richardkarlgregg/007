@@ -45,6 +45,8 @@ export interface RoomTriangle {
   colA: VertexColour;
   colB: VertexColour;
   colC: VertexColour;
+  /** Per-triangle environment alpha state (0..1) from G_SETENVCOLOR. */
+  layerAlpha: number;
 }
 
 function parseIntAuto(input: string): number {
@@ -203,6 +205,7 @@ function pushTriangle(
   room: RoomDataRef,
   materialId: number,
   isSecondary: boolean,
+  layerAlpha: number,
   a: ParsedVertex,
   b: ParsedVertex,
   c: ParsedVertex
@@ -219,7 +222,8 @@ function pushTriangle(
     uvC: { u: c.u, v: c.v },
     colA: { r: a.r, g: a.g, b: a.b },
     colB: { r: b.r, g: b.g, b: b.b },
-    colC: { r: c.r, g: c.g, b: c.b }
+    colC: { r: c.r, g: c.g, b: c.b },
+    layerAlpha
   });
 }
 
@@ -249,6 +253,7 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
   // The no-texture combine is identified by the lower 3 bytes of word0 all
   // being 0xFF (pattern: 0xFC FF FF FF).
   let isNoTexMode = false;
+  let envAlpha = 255;
 
   for (let offset = 0; offset + 7 < mappingBuffer.length; offset += 8) {
     const word0 =
@@ -266,6 +271,12 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
     // G_SETCOMBINE (0xFC): update no-texture mode flag.
     if (command === 0xfc) {
       isNoTexMode = (word0 & 0x00ffffff) === 0x00ffffff;
+      continue;
+    }
+
+    // G_SETENVCOLOR (0xFB) — capture per-DL alpha state used by XLU combines.
+    if (command === 0xfb) {
+      envAlpha = word1 & 0xff;
       continue;
     }
 
@@ -314,7 +325,7 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
           if (!a || !b || !c) {
             continue;
           }
-          pushTriangle(triangles, room, currentMaterialId, isSecondary, a, b, c);
+          pushTriangle(triangles, room, currentMaterialId, isSecondary, envAlpha / 255, a, b, c);
         }
       }
       continue;
@@ -332,7 +343,7 @@ function decodeRoomTrianglesFromMapping(room: RoomDataRef, mappingCompressed: Ui
           const b = cache[i1];
           const c = cache[i2];
           if (a && b && c) {
-            pushTriangle(triangles, room, currentMaterialId, isSecondary, a, b, c);
+            pushTriangle(triangles, room, currentMaterialId, isSecondary, envAlpha / 255, a, b, c);
           }
         }
       }

@@ -78,6 +78,8 @@ export interface RoomTriangle {
   colA: VertexColour;
   colB: VertexColour;
   colC: VertexColour;
+  /** Per-triangle environment alpha state from G_SETENVCOLOR (0..1). */
+  layerAlpha?: number;
 }
 
 export interface AtlasItem {

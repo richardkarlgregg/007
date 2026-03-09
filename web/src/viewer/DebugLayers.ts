@@ -141,9 +141,11 @@ const ATLAS_VERTEX_SHADER = /* glsl */ `
   attribute float aMaterialId;
   attribute vec2  aTexelUV;
   attribute vec3  aVertexColor;
+  attribute float aLayerAlpha;
   varying   float vMaterialId;
   varying   vec2  vTexelUV;
   varying   vec3  vVertexColor;
+  varying   float vLayerAlpha;
   varying   float vFogDepth;
   varying   float vWorldY;
 
@@ -155,6 +157,7 @@ const ATLAS_VERTEX_SHADER = /* glsl */ `
     vMaterialId  = aMaterialId;
     vTexelUV     = aTexelUV;
     vVertexColor = aVertexColor;
+    vLayerAlpha  = aLayerAlpha;
 
     vec4 worldPos   = modelMatrix * vec4(transformed, 1.0);
     vWorldY         = worldPos.y;
@@ -186,7 +189,6 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   uniform float uLookupWidth;
   uniform float uAlphaDiscardThreshold;
   uniform float uUseTextureAlpha;
-  uniform float uLayerOpacity;
 
   // Fog — controlled directly so the G-key toggle is instant and reliable.
   uniform float uFogNear;
@@ -197,6 +199,7 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   varying float vMaterialId;
   varying vec2  vTexelUV;
   varying vec3  vVertexColor;
+  varying float vLayerAlpha;
   varying float vFogDepth;
   varying float vWorldY;
 
@@ -257,7 +260,7 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
     rgb = mix(rgb, uFogColor, fogFactor);
 
     float outAlpha = (uUseTextureAlpha > 0.5) ? tex.a : 1.0;
-    outAlpha *= uLayerOpacity;
+    outAlpha *= clamp(vLayerAlpha, 0.0, 1.0);
     gl_FragColor = vec4(rgb, outAlpha);
   }
 `;
@@ -302,7 +305,7 @@ export function buildBgMeshWithAtlas(
 
   // Fog uniforms are passed in by reference — updating .value fields in the
   // caller automatically propagates to the GPU on the next render frame.
-  function makeAtlasUniforms(useTextureAlpha: boolean, layerOpacity: number): Record<string, THREE.IUniform> {
+  function makeAtlasUniforms(useTextureAlpha: boolean): Record<string, THREE.IUniform> {
     return {
       ...THREE.UniformsLib.lights,
       uAtlas:       { value: atlasTexture },
@@ -311,7 +314,6 @@ export function buildBgMeshWithAtlas(
       uLookupWidth: { value: LOOKUP_WIDTH },
       uAlphaDiscardThreshold: { value: 0.5 },
       uUseTextureAlpha: { value: useTextureAlpha ? 1.0 : 0.0 },
-      uLayerOpacity: { value: layerOpacity },
       // Spread fog uniforms by reference so live updates from applyFog() work.
       uFogNear:    fogUniforms.uFogNear,
       uFogFar:     fogUniforms.uFogFar,
@@ -322,7 +324,7 @@ export function buildBgMeshWithAtlas(
 
   // Base material — primary-DL geometry, no polygon offset.
   const baseMaterial = new THREE.ShaderMaterial({
-    uniforms:       makeAtlasUniforms(false, 1.0),
+    uniforms:       makeAtlasUniforms(false),
     vertexShader:   ATLAS_VERTEX_SHADER,
     fragmentShader: ATLAS_FRAGMENT_SHADER,
     side:           THREE.DoubleSide,
@@ -331,7 +333,7 @@ export function buildBgMeshWithAtlas(
 
   // Decal material — secondary-DL geometry with polygon offset (ZMODE_DECAL).
   const decalMaterial = new THREE.ShaderMaterial({
-    uniforms:            makeAtlasUniforms(true, 0.65),
+    uniforms:            makeAtlasUniforms(true),
     vertexShader:        ATLAS_VERTEX_SHADER,
     fragmentShader:      ATLAS_FRAGMENT_SHADER,
     side:                THREE.DoubleSide,
@@ -354,6 +356,7 @@ export function buildBgMeshWithAtlas(
     ids: number[];
     uvs: number[];
     cols: number[];
+    alphas: number[];
     triIds: number[];
   }
   const runs: AtlasRun[] = [];
@@ -372,6 +375,7 @@ export function buildBgMeshWithAtlas(
         ids: [],
         uvs: [],
         cols: [],
+        alphas: [],
         triIds: [],
       };
       runs.push(currentRun);
@@ -392,6 +396,8 @@ export function buildBgMeshWithAtlas(
       tri.colB.r, tri.colB.g, tri.colB.b,
       tri.colC.r, tri.colC.g, tri.colC.b
     );
+    const layerAlpha = tri.layerAlpha ?? 1.0;
+    currentRun.alphas.push(layerAlpha, layerAlpha, layerAlpha);
     currentRun.triIds.push(triId);
   });
 
@@ -405,6 +411,7 @@ export function buildBgMeshWithAtlas(
     geometry.setAttribute("aMaterialId", new THREE.Float32BufferAttribute(run.ids, 1));
     geometry.setAttribute("aTexelUV", new THREE.Float32BufferAttribute(run.uvs, 2));
     geometry.setAttribute("aVertexColor", new THREE.Float32BufferAttribute(run.cols, 3));
+    geometry.setAttribute("aLayerAlpha", new THREE.Float32BufferAttribute(run.alphas, 1));
     geometry.computeVertexNormals();
 
     const mesh = new THREE.Mesh(geometry, run.isSecondary ? decalMaterial : baseMaterial);
@@ -841,6 +848,7 @@ function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
   const materialIds: number[] = [];
   const texelUvs: number[] = [];
   const vertexColorsRaw: number[] = [];
+  const layerAlphas: number[] = [];
   const colors: number[] = [];
 
   for (const tri of geo.triangles) {
@@ -849,6 +857,7 @@ function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
       materialIds.push(tri.materialId);
       texelUvs.push(v.u / 32.0, v.v / 32.0);
       vertexColorsRaw.push(v.r, v.g, v.b);
+      layerAlphas.push(1.0);
       // N64 vertex colors are 0-255; normalize to 0-1 for Three.js
       colors.push(v.r / 255, v.g / 255, v.b / 255);
     }
@@ -860,6 +869,7 @@ function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
   bufGeo.setAttribute("aMaterialId", new THREE.Float32BufferAttribute(materialIds, 1));
   bufGeo.setAttribute("aTexelUV", new THREE.Float32BufferAttribute(texelUvs, 2));
   bufGeo.setAttribute("aVertexColor", new THREE.Float32BufferAttribute(vertexColorsRaw, 3));
+  bufGeo.setAttribute("aLayerAlpha", new THREE.Float32BufferAttribute(layerAlphas, 1));
   // Fallback MeshBasicMaterial attribute:
   bufGeo.setAttribute("color",    new THREE.Float32BufferAttribute(colors, 3));
   bufGeo.computeVertexNormals();
