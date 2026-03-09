@@ -118,6 +118,14 @@ interface N64Vertex {
   r: number; g: number; b: number;
 }
 
+function cloneVertex(v: N64Vertex): N64Vertex {
+  return {
+    x: v.x, y: v.y, z: v.z,
+    u: v.u, v: v.v,
+    r: v.r, g: v.g, b: v.b,
+  };
+}
+
 function readVertex(buf: Uint8Array, off: number): N64Vertex {
   return {
     x: readI16BE(buf, off),
@@ -142,6 +150,26 @@ function decodeTri4(w0: number, w1: number): [number, number, number][] {
     [(w1 >>> 16) & 0xf, (w1 >>> 20) & 0xf, (w0 >>> 8)  & 0xf],
     [(w1 >>> 24) & 0xf, (w1 >>> 28) & 0xf, (w0 >>> 12) & 0xf],
   ];
+}
+
+function decodeTri2F3D(w0: number, w1: number): [number, number, number][] {
+  const t0: [number, number, number] = [
+    (w0 >>> 16) & 0xff,
+    (w0 >>> 8) & 0xff,
+    w0 & 0xff,
+  ];
+  const t1: [number, number, number] = [
+    (w1 >>> 16) & 0xff,
+    (w1 >>> 8) & 0xff,
+    w1 & 0xff,
+  ];
+  const asIndex = (v: number): number | null => (v % 10 === 0 ? (v / 10) : null);
+  const a0 = asIndex(t0[0]); const a1 = asIndex(t0[1]); const a2 = asIndex(t0[2]);
+  const b0 = asIndex(t1[0]); const b1 = asIndex(t1[1]); const b2 = asIndex(t1[2]);
+  const out: [number, number, number][] = [];
+  if (a0 !== null && a1 !== null && a2 !== null) out.push([a0, a1, a2]);
+  if (b0 !== null && b1 !== null && b2 !== null) out.push([b0, b1, b2]);
+  return out;
 }
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -279,11 +307,16 @@ function decodeGfx(
     }
 
     if (opcode === 0xb1) {
-      // GE TRI4: up to 4 triangles with 4-bit vertex indices.
-      for (const [i0, i1, i2] of decodeTri4(w0, w1)) {
+      // 0xB1 is GE TRI4 in many model lists, but some records use
+      // standard F3D TRI2 byte/10 encoding. Detect TRI2 when all bytes
+      // are /10-style indices; otherwise fall back to TRI4 nibble decode.
+      const tri2 = decodeTri2F3D(w0, w1);
+      const useTri2 = tri2.length > 0 && tri2.every(([i0, i1, i2]) => i0 < 64 && i1 < 64 && i2 < 64);
+      const tris = useTri2 ? tri2 : decodeTri4(w0, w1);
+      for (const [i0, i1, i2] of tris) {
         if (i0 === 0 && i1 === 0 && i2 === 0) continue;
         const va = cache[i0]; const vb = cache[i1]; const vc = cache[i2];
-        if (va && vb && vc) triangles.push({ materialId, a: va, b: vb, c: vc });
+        if (va && vb && vc) triangles.push({ materialId, a: cloneVertex(va), b: cloneVertex(vb), c: cloneVertex(vc) });
       }
       continue;
     }
@@ -296,7 +329,7 @@ function decodeGfx(
       if (Number.isInteger(i0) && Number.isInteger(i1) && Number.isInteger(i2)) {
         if (!(i0 === i1 && i1 === i2)) {
           const va = cache[i0]; const vb = cache[i1]; const vc = cache[i2];
-          if (va && vb && vc) triangles.push({ materialId, a: va, b: vb, c: vc });
+          if (va && vb && vc) triangles.push({ materialId, a: cloneVertex(va), b: cloneVertex(vb), c: cloneVertex(vc) });
         }
       }
       continue;
@@ -314,6 +347,7 @@ interface DLCollisionInfo {
   secondaryGfxOffset: number | null;
   vtxBinaryOffset: number;
   vtxCount: number;
+  sourceOpcode: number;
   tx: number;
   ty: number;
   tz: number;
@@ -350,38 +384,35 @@ function collectDisplayListRecordsFromModelTree(binary: Uint8Array): DLCollision
     const opcode = readU16BE(binary, nodeOff);
     const dataPtr = readU32BE(binary, nodeOff + 4);
     const nextPtr = readU32BE(binary, nodeOff + 0x0c);
-    const childPtr = readU32BE(binary, nodeOff + 0x14);
+    let childPtr = readU32BE(binary, nodeOff + 0x14);
+
+    const dataOff = ptrToOffset(dataPtr, binary.length);
+    let childTx = tx;
+    let childTy = ty;
+    let childTz = tz;
+
+    // Group nodes offset their child subtree by Origin.
+    if ((opcode === 0x0002 || opcode === 0x0015) && dataOff !== null && dataOff + 12 <= binary.length) {
+      childTx += readF32BE(binary, dataOff + 0);
+      childTy += readF32BE(binary, dataOff + 4);
+      childTz += readF32BE(binary, dataOff + 8);
+    }
+
+    // Runtime behavior from modelInitRwData():
+    // - LOD child points at rodata->Affects.
+    // - Switch child points at rodata->Controls.
+    if (dataOff !== null) {
+      if (opcode === 0x0008 && dataOff + 0x0c <= binary.length) {
+        childPtr = readU32BE(binary, dataOff + 0x08);
+      } else if (opcode === 0x0012 && dataOff + 0x04 <= binary.length) {
+        childPtr = readU32BE(binary, dataOff + 0x00);
+      }
+    }
     const nextOff = ptrToOffset(nextPtr, binary.length);
     const childOff = ptrToOffset(childPtr, binary.length);
 
-    const dataOff = ptrToOffset(dataPtr, binary.length);
-    const childTx = tx;
-    const childTy = ty;
-    const childTz = tz;
-
     if (nextOff !== null) stack.push({ nodeOff: nextOff, tx, ty, tz });
     if (childOff !== null) stack.push({ nodeOff: childOff, tx: childTx, ty: childTy, tz: childTz });
-
-    // Some node types reference traversal targets in rodata fields rather than
-    // ModelNode.child/next links (switch, LOD, BSP).
-    if (dataOff !== null) {
-      if (opcode === 0x0008 && dataOff + 0x0c <= binary.length) {
-        const affectsPtr = readU32BE(binary, dataOff + 0x08);
-        const affectsOff = ptrToOffset(affectsPtr, binary.length);
-        if (affectsOff !== null) stack.push({ nodeOff: affectsOff, tx, ty, tz });
-      } else if (opcode === 0x0012 && dataOff + 0x04 <= binary.length) {
-        const controlsPtr = readU32BE(binary, dataOff + 0x00);
-        const controlsOff = ptrToOffset(controlsPtr, binary.length);
-        if (controlsOff !== null) stack.push({ nodeOff: controlsOff, tx, ty, tz });
-      } else if (opcode === 0x0009 && dataOff + 0x20 <= binary.length) {
-        const leftPtr = readU32BE(binary, dataOff + 0x18);
-        const rightPtr = readU32BE(binary, dataOff + 0x1c);
-        const leftOff = ptrToOffset(leftPtr, binary.length);
-        const rightOff = ptrToOffset(rightPtr, binary.length);
-        if (leftOff !== null) stack.push({ nodeOff: leftOff, tx, ty, tz });
-        if (rightOff !== null) stack.push({ nodeOff: rightOff, tx, ty, tz });
-      }
-    }
 
     if (dataOff === null) continue;
 
@@ -402,6 +433,7 @@ function collectDisplayListRecordsFromModelTree(binary: Uint8Array): DLCollision
             secondaryGfxOffset: secPtr === 0 ? null : secOff,
             vtxBinaryOffset: vtxOff,
             vtxCount: numVtx,
+            sourceOpcode: opcode,
             tx,
             ty,
             tz,
@@ -422,6 +454,7 @@ function collectDisplayListRecordsFromModelTree(binary: Uint8Array): DLCollision
             secondaryGfxOffset: null,
             vtxBinaryOffset: vtxOff,
             vtxCount: numVtx,
+            sourceOpcode: opcode,
             tx,
             ty,
             tz,
@@ -444,6 +477,7 @@ function collectDisplayListRecordsFromModelTree(binary: Uint8Array): DLCollision
             secondaryGfxOffset: secPtr === 0 ? null : secOff,
             vtxBinaryOffset: vtxOff,
             vtxCount: numVtx,
+            sourceOpcode: opcode,
             tx,
             ty,
             tz,
@@ -547,6 +581,7 @@ function scanDLCollisionRecords(binary: Uint8Array): DLCollisionInfo[] {
       secondaryGfxOffset: secPtr !== 0 ? secPtr - SEGMENT_BASE : null,
       vtxBinaryOffset:    vtxOff,
       vtxCount:           numVtx,
+      sourceOpcode: 0,
       tx: 0,
       ty: 0,
       tz: 0,
@@ -610,6 +645,7 @@ function scanDisplayListRecords(binary: Uint8Array): DLCollisionInfo[] {
       secondaryGfxOffset: secPtr !== 0 ? secPtr - SEGMENT_BASE : null,
       vtxBinaryOffset: vtxOff,
       vtxCount: numVtx,
+      sourceOpcode: 0,
       tx: 0,
       ty: 0,
       tz: 0,
@@ -661,6 +697,11 @@ export function parsePropModel(binPath: string): PropModelGeometry | null {
   for (const rec of dlRecords) {
     const priTris = decodeGfx(binary, rec.primaryGfxOffset, rec.vtxBinaryOffset);
     for (const t of priTris) {
+      if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
+        t.a.x += rec.tx; t.a.y += rec.ty; t.a.z += rec.tz;
+        t.b.x += rec.tx; t.b.y += rec.ty; t.b.z += rec.tz;
+        t.c.x += rec.tx; t.c.y += rec.ty; t.c.z += rec.tz;
+      }
       allTriangles.push(t);
       if (t.materialId > 0) materialIdSet.add(t.materialId);
     }
@@ -668,6 +709,11 @@ export function parsePropModel(binPath: string): PropModelGeometry | null {
     if (rec.secondaryGfxOffset !== null) {
       const secTris = decodeGfx(binary, rec.secondaryGfxOffset, rec.vtxBinaryOffset);
       for (const t of secTris) {
+        if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
+          t.a.x += rec.tx; t.a.y += rec.ty; t.a.z += rec.tz;
+          t.b.x += rec.tx; t.b.y += rec.ty; t.b.z += rec.tz;
+          t.c.x += rec.tx; t.c.y += rec.ty; t.c.z += rec.tz;
+        }
         allTriangles.push(t);
         if (t.materialId > 0) materialIdSet.add(t.materialId);
       }
