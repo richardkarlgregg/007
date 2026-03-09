@@ -360,7 +360,7 @@
         text-transform: uppercase;
       }
     </style>
-    <script type="module" crossorigin src="/007/web/dist/assets/index-BFY0advT.js"></script>
+    <script type="module" crossorigin src="/007/web/dist/assets/index-BpXT07Qg.js"></script>
   </head>
   <body>
     <div id="app"></div>
@@ -390,6 +390,7 @@
         <span class="hud-key">R</span><span class="hud-val">remaster PBR</span>
         <span class="hud-key">G</span><span class="hud-val">fog mode</span>
         <span class="hud-key">L</span><span class="hud-val">lighting panel</span>
+        <span class="hud-key">N</span><span class="hud-val">snow on/off</span>
         <span class="hud-key">H</span><span class="hud-val">light helpers</span>
       </div>
       <span id="fly-hint"></span>
@@ -458,6 +459,19 @@
       <div class="light-row"><label for="light-ambient">ambient intensity</label><input id="light-ambient" type="number" step="0.05" /></div>
       <div class="light-row"><label for="light-flare-enabled">sun flare</label><input id="light-flare-enabled" type="checkbox" /></div>
       <div class="light-row"><label for="light-flare-intensity">flare intensity</label><input id="light-flare-intensity" type="number" step="0.05" /></div>
+
+      <div class="light-subhead">Snow FX</div>
+      <div class="light-row"><label for="light-snow-enabled">enable snow</label><input id="light-snow-enabled" type="checkbox" /></div>
+      <div class="light-row"><label for="light-snow-intensity">intensity (particle x)</label><input id="light-snow-intensity" type="number" step="1" /></div>
+      <div class="light-row"><label for="light-snow-speed">fall speed</label><input id="light-snow-speed" type="number" step="1" /></div>
+      <div class="light-row"><label for="light-snow-gravity">gravity</label><input id="light-snow-gravity" type="number" step="0.1" /></div>
+      <div class="light-row"><label for="light-snow-size">flake size</label><input id="light-snow-size" type="number" step="0.1" /></div>
+      <div class="light-row"><label for="light-snow-wind">wind drift</label><input id="light-snow-wind" type="number" step="0.1" /></div>
+      <div class="light-row"><label for="light-snow-wind-dir">wind direction deg</label><input id="light-snow-wind-dir" type="number" step="1" /></div>
+      <div class="light-row"><label for="light-snow-drift-rand">drift randomness</label><input id="light-snow-drift-rand" type="number" step="0.01" /></div>
+      <div class="light-row"><label for="light-snow-size-var">size variation</label><input id="light-snow-size-var" type="number" step="0.01" /></div>
+      <div class="light-row"><label for="light-snow-haze-intensity">haze intensity</label><input id="light-snow-haze-intensity" type="number" step="0.01" /></div>
+      <div class="light-row"><label for="light-snow-haze-close">haze closeness</label><input id="light-snow-haze-close" type="number" step="0.01" /></div>
 
       <div class="light-subhead">Sun Position</div>
       <div class="light-row"><label for="light-sun-azimuth">sun azimuth deg</label><input id="light-sun-azimuth" type="number" step="1" /></div>
