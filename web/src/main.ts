@@ -568,7 +568,7 @@ async function bootstrap(): Promise<void> {
   const propTypePanel = document.getElementById("prop-type-panel");
   const propTypeList = document.getElementById("prop-type-list");
   const propTypeEnabled = new Map<string, boolean>();
-  const DEFAULT_VISIBLE_PROP_TYPES = new Set(["StandardProp", "Door"]);
+  const DEFAULT_VISIBLE_PROP_TYPES = new Set(["StandardProp", "Door", "Tank", "Aircraft"]);
 
   function applyPropTypeVisibility(): void {
     if (!propsLayer) return;

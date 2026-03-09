@@ -869,6 +869,30 @@ export function buildPropsLayer(
     return base.add(offset);
   }
 
+  function boundPadCenter(boundPad: BoundPadRecord): THREE.Vector3 {
+    // Source equivalent: sub_GAME_7F001BD4 (padGetCentre) for generic bound pads.
+    const up = new THREE.Vector3(boundPad.up.x, boundPad.up.y, boundPad.up.z);
+    const look = new THREE.Vector3(boundPad.orientation.x, boundPad.orientation.y, boundPad.orientation.z);
+    const normal = new THREE.Vector3().crossVectors(up, look);
+    if (normal.lengthSq() < 1e-10) normal.set(1, 0, 0);
+    normal.normalize();
+    const base = new THREE.Vector3(boundPad.position.x, boundPad.position.y, boundPad.position.z);
+    const bb = boundPad.bbox;
+    const offset = new THREE.Vector3(0, 0, 0)
+      .addScaledVector(normal, (bb.zmax + bb.zmin) * 0.5)
+      .addScaledVector(up, (bb.ymax + bb.ymin) * 0.5)
+      .addScaledVector(look, (bb.xmax + bb.xmin) * 0.5);
+    return base.add(offset);
+  }
+
+  function boundPadPos2(boundPad: BoundPadRecord): THREE.Vector3 {
+    // Source equivalent in prop.c before sub_GAME_7F04088C:
+    // pos2 = padGetCentre + up * ((bbox.ymin - bbox.ymax) * 0.5)
+    const center = boundPadCenter(boundPad);
+    const up = new THREE.Vector3(boundPad.up.x, boundPad.up.y, boundPad.up.z);
+    return center.addScaledVector(up, (boundPad.bbox.ymin - boundPad.bbox.ymax) * 0.5);
+  }
+
   function barycentricYAtXZ(
     px: number,
     pz: number,
@@ -956,9 +980,9 @@ export function buildPropsLayer(
         uLookup:      { value: lookupTex },
         uAtlasSize:   { value: new THREE.Vector2(options.atlas.width, options.atlas.height) },
         uLookupWidth: { value: LOOKUP_WIDTH },
-        // Props (especially vehicles) can use low-alpha texels for shading;
-        // keep discard nearly-off to avoid dropping large mesh regions.
-        uAlphaDiscardThreshold: { value: 0.01 },
+        // Do not globally alpha-discard props: several prop textures use alpha
+        // channels for shading data, and hard discard can punch out valid faces.
+        uAlphaDiscardThreshold: { value: 0.0 },
         uFogNear:     fogUniforms.uFogNear,
         uFogFar:      fogUniforms.uFogFar,
         uFogColor:    fogUniforms.uFogColor,
@@ -1127,7 +1151,12 @@ export function buildPropsLayer(
     } else {
       const p = boundPad ?? pad;
       if (!p) continue;
-      mesh.position.set(p.position.x, p.position.y, p.position.z);
+      if (boundPad && !pad) {
+        const pos2 = boundPadPos2(boundPad);
+        mesh.position.copy(pos2);
+      } else {
+        mesh.position.set(p.position.x, p.position.y, p.position.z);
+      }
     }
 
     // Door branch already writes a full transform matrix.

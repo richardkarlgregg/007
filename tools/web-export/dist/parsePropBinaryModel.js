@@ -127,7 +127,7 @@ function decodeTri4(w0, w1) {
         [(w1 >>> 24) & 0xf, (w1 >>> 28) & 0xf, (w0 >>> 12) & 0xf],
     ];
 }
-function decodeTri2F3D(w0, w1) {
+function decodeTri2ByStride(w0, w1, stride) {
     const t0 = [
         (w0 >>> 16) & 0xff,
         (w0 >>> 8) & 0xff,
@@ -138,7 +138,7 @@ function decodeTri2F3D(w0, w1) {
         (w1 >>> 8) & 0xff,
         w1 & 0xff,
     ];
-    const asIndex = (v) => (v % 10 === 0 ? (v / 10) : null);
+    const asIndex = (v) => (v % stride === 0 ? (v / stride) : null);
     const a0 = asIndex(t0[0]);
     const a1 = asIndex(t0[1]);
     const a2 = asIndex(t0[2]);
@@ -152,12 +152,25 @@ function decodeTri2F3D(w0, w1) {
         out.push([b0, b1, b2]);
     return out;
 }
+function decodeTriWordByStride(word, stride) {
+    const b0 = (word >>> 16) & 0xff;
+    const b1 = (word >>> 8) & 0xff;
+    const b2 = word & 0xff;
+    if ((b0 % stride) !== 0 || (b1 % stride) !== 0 || (b2 % stride) !== 0)
+        return null;
+    const i0 = b0 / stride;
+    const i1 = b1 / stride;
+    const i2 = b2 / stride;
+    if (i0 < 0 || i0 >= 64 || i1 < 0 || i1 >= 64 || i2 < 0 || i2 >= 64)
+        return null;
+    return [i0, i1, i2];
+}
 // ─── GFX display-list decoder ────────────────────────────────────────────────
 /**
  * Decode one Gfx display list that starts at `gfxOffset` within `binary`.
  * Vertices are loaded from segment-4, which points to `vtxBinaryOffset` in `binary`.
  */
-function decodeGfx(binary, gfxOffset, vtxBinaryOffset) {
+function decodeGfx(binary, gfxOffset, vtxBinaryOffset, baseBinaryOffset) {
     const triangles = [];
     const cache = new Array(64).fill(null);
     let materialId = 0;
@@ -224,12 +237,29 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset) {
             }
             if (n <= 0 || n > 64 || v0 < 0 || v0 + n > 64)
                 continue;
-            // Segment-4 byte offset → index into vertex array
+            // Segment-selected byte offset -> index into vertex array.
+            // GE props use:
+            // - seg 0x04: Vertices table
+            // - seg 0x03: BaseAddr table
+            const seg = (w1 >>> 24) & 0xff;
             const byteOff = w1 & 0x00ffffff;
             const baseIdx = Math.floor(byteOff / 16);
             for (let i = 0; i < n; i++) {
-                const vOff = vtxBinaryOffset + (baseIdx + i) * 16;
-                cache[v0 + i] = (vOff + 15 < binary.length) ? readVertex(binary, vOff) : null;
+                const idx = baseIdx + i;
+                const candidates = (seg === 0x03)
+                    ? [baseBinaryOffset, vtxBinaryOffset] // seg3 can be BaseAddr; fallback keeps legacy models alive
+                    : [vtxBinaryOffset];
+                let loaded = null;
+                for (const srcBase of candidates) {
+                    if (srcBase === null)
+                        continue;
+                    const vOff = srcBase + idx * 16;
+                    if (vOff + 15 >= binary.length)
+                        continue;
+                    loaded = readVertex(binary, vOff);
+                    break;
+                }
+                cache[v0 + i] = loaded;
             }
             continue;
         }
@@ -243,9 +273,17 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset) {
             // 0xB1 is GE TRI4 in many model lists, but some records use
             // standard F3D TRI2 byte/10 encoding. Detect TRI2 when all bytes
             // are /10-style indices; otherwise fall back to TRI4 nibble decode.
-            const tri2 = decodeTri2F3D(w0, w1);
-            const useTri2 = tri2.length > 0 && tri2.every(([i0, i1, i2]) => i0 < 64 && i1 < 64 && i2 < 64);
-            const tris = useTri2 ? tri2 : decodeTri4(w0, w1);
+            const tri2Bytes = [
+                (w0 >>> 16) & 0xff, (w0 >>> 8) & 0xff, w0 & 0xff,
+                (w1 >>> 16) & 0xff, (w1 >>> 8) & 0xff, w1 & 0xff,
+            ];
+            const tri2By10 = decodeTri2ByStride(w0, w1, 10);
+            // Require all six bytes to be valid /10 indices before treating as TRI2.
+            // Partial matches (only one triangle decodes) are common in TRI4 streams
+            // and cause missing/warped faces if misclassified.
+            const validTri2By10 = tri2Bytes.every((v) => v % 10 === 0 && (v / 10) < 64)
+                && tri2By10.length === 2;
+            const tris = validTri2By10 ? tri2By10 : decodeTri4(w0, w1);
             for (const [i0, i1, i2] of tris) {
                 if (i0 === 0 && i1 === 0 && i2 === 0)
                     continue;
@@ -270,6 +308,34 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset) {
                     if (va && vb && vc)
                         triangles.push({ materialId, a: cloneVertex(va), b: cloneVertex(vb), c: cloneVertex(vc) });
                 }
+            }
+            continue;
+        }
+        if (opcode === 0xb5) {
+            // G_QUAD: represented as two triangles (w0 + w1 triangle payload words).
+            // Try byte/10 (F3D style) first, then byte/2 (F3DEX style).
+            const triA10 = decodeTriWordByStride(w0, 10);
+            const triB10 = decodeTriWordByStride(w1, 10);
+            const triA2 = triA10 ? null : decodeTriWordByStride(w0, 2);
+            const triB2 = triB10 ? null : decodeTriWordByStride(w1, 2);
+            const tris = [];
+            if (triA10 && triB10) {
+                tris.push(triA10, triB10);
+            }
+            else {
+                if (triA2)
+                    tris.push(triA2);
+                if (triB2)
+                    tris.push(triB2);
+            }
+            for (const [i0, i1, i2] of tris) {
+                if (i0 === i1 && i1 === i2)
+                    continue;
+                const va = cache[i0];
+                const vb = cache[i1];
+                const vc = cache[i2];
+                if (va && vb && vc)
+                    triangles.push({ materialId, a: cloneVertex(va), b: cloneVertex(vb), c: cloneVertex(vc) });
             }
             continue;
         }
@@ -337,6 +403,20 @@ function collectDisplayListRecordsFromModelTree(binary) {
             stack.push({ nodeOff: nextOff, tx, ty, tz });
         if (childOff !== null)
             stack.push({ nodeOff: childOff, tx: childTx, ty: childTy, tz: childTz });
+        // Runtime behavior from modelInitRwData():
+        // - BSP nodes can reference left/right child branches in rodata.
+        //   Include both so we don't miss sub-meshes that aren't wired through
+        //   ModelNode.child directly in extracted binaries.
+        if (opcode === 0x0009 && dataOff !== null && dataOff + 0x20 <= binary.length) {
+            const leftPtr = readU32BE(binary, dataOff + 0x18);
+            const rightPtr = readU32BE(binary, dataOff + 0x1c);
+            const leftOff = ptrToOffset(leftPtr, binary.length);
+            const rightOff = ptrToOffset(rightPtr, binary.length);
+            if (leftOff !== null)
+                stack.push({ nodeOff: leftOff, tx, ty, tz });
+            if (rightOff !== null)
+                stack.push({ nodeOff: rightOff, tx, ty, tz });
+        }
         if (dataOff === null)
             continue;
         let rec = null;
@@ -345,16 +425,19 @@ function collectDisplayListRecordsFromModelTree(binary) {
             if (dataOff + 0x14 <= binary.length) {
                 const priPtr = readU32BE(binary, dataOff + 0x00);
                 const secPtr = readU32BE(binary, dataOff + 0x04);
+                const basePtr = readU32BE(binary, dataOff + 0x08);
                 const vtxPtr = readU32BE(binary, dataOff + 0x0c);
                 const numVtx = readU16BE(binary, dataOff + 0x10);
                 const priOff = ptrToOffset(priPtr, binary.length);
                 const secOff = secPtr === 0 ? null : ptrToOffset(secPtr, binary.length);
+                const baseOff = basePtr === 0 ? null : ptrToOffset(basePtr, binary.length);
                 const vtxOff = ptrToOffset(vtxPtr, binary.length);
-                if (priOff !== null && (secPtr === 0 || secOff !== null) && vtxOff !== null && numVtx >= 1 && numVtx <= MAX_MODEL_VERTICES) {
+                if (priOff !== null && (secPtr === 0 || secOff !== null) && (basePtr === 0 || baseOff !== null) && vtxOff !== null && numVtx >= 1 && numVtx <= MAX_MODEL_VERTICES) {
                     rec = {
                         primaryGfxOffset: priOff,
                         secondaryGfxOffset: secPtr === 0 ? null : secOff,
                         vtxBinaryOffset: vtxOff,
+                        baseBinaryOffset: basePtr === 0 ? null : baseOff,
                         vtxCount: numVtx,
                         sourceOpcode: opcode,
                         tx,
@@ -377,6 +460,7 @@ function collectDisplayListRecordsFromModelTree(binary) {
                         primaryGfxOffset: priOff,
                         secondaryGfxOffset: null,
                         vtxBinaryOffset: vtxOff,
+                        baseBinaryOffset: null,
                         vtxCount: numVtx,
                         sourceOpcode: opcode,
                         tx,
@@ -393,14 +477,17 @@ function collectDisplayListRecordsFromModelTree(binary) {
                 const secPtr = readU32BE(binary, dataOff + 0x04);
                 const vtxPtr = readU32BE(binary, dataOff + 0x08);
                 const numVtx = readU16BE(binary, dataOff + 0x0c);
+                const basePtr = readU32BE(binary, dataOff + 0x1c);
                 const priOff = ptrToOffset(priPtr, binary.length);
                 const secOff = secPtr === 0 ? null : ptrToOffset(secPtr, binary.length);
                 const vtxOff = ptrToOffset(vtxPtr, binary.length);
-                if (priOff !== null && (secPtr === 0 || secOff !== null) && vtxOff !== null && numVtx >= 1 && numVtx <= MAX_MODEL_VERTICES) {
+                const baseOff = basePtr === 0 ? null : ptrToOffset(basePtr, binary.length);
+                if (priOff !== null && (secPtr === 0 || secOff !== null) && (basePtr === 0 || baseOff !== null) && vtxOff !== null && numVtx >= 1 && numVtx <= MAX_MODEL_VERTICES) {
                     rec = {
                         primaryGfxOffset: priOff,
                         secondaryGfxOffset: secPtr === 0 ? null : secOff,
                         vtxBinaryOffset: vtxOff,
+                        baseBinaryOffset: basePtr === 0 ? null : baseOff,
                         vtxCount: numVtx,
                         sourceOpcode: opcode,
                         tx,
@@ -506,6 +593,10 @@ function scanDLCollisionRecords(binary) {
             primaryGfxOffset: priOff,
             secondaryGfxOffset: secPtr !== 0 ? secPtr - SEGMENT_BASE : null,
             vtxBinaryOffset: vtxOff,
+            baseBinaryOffset: (() => {
+                const basePtr = readU32BE(binary, off + 0x1c);
+                return basePtr !== 0 && isSegAddr(basePtr) ? (basePtr - SEGMENT_BASE) : null;
+            })(),
             vtxCount: numVtx,
             sourceOpcode: 0,
             tx: 0,
@@ -569,6 +660,7 @@ function scanDisplayListRecords(binary) {
             primaryGfxOffset: priOff,
             secondaryGfxOffset: secPtr !== 0 ? secPtr - SEGMENT_BASE : null,
             vtxBinaryOffset: vtxOff,
+            baseBinaryOffset: basePtr !== 0 ? basePtr - SEGMENT_BASE : null,
             vtxCount: numVtx,
             sourceOpcode: 0,
             tx: 0,
@@ -595,7 +687,7 @@ export function parsePropModel(binPath) {
     const seenPrimary = new Set();
     // Tree traversal is authoritative when available (correct node + transform).
     for (const rec of treeRecords) {
-        const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}:${rec.tx}:${rec.ty}:${rec.tz}`;
+        const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}:${rec.baseBinaryOffset ?? -1}:${rec.tx}:${rec.ty}:${rec.tz}`;
         if (seenKeys.has(key))
             continue;
         seenKeys.add(key);
@@ -609,7 +701,7 @@ export function parsePropModel(binPath) {
         for (const rec of [...scanDLCollisionRecords(binary), ...scanDisplayListRecords(binary)]) {
             if (seenPrimary.has(rec.primaryGfxOffset))
                 continue;
-            const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}:0:0:0`;
+            const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}:${rec.baseBinaryOffset ?? -1}:0:0:0`;
             if (seenKeys.has(key))
                 continue;
             seenKeys.add(key);
@@ -621,9 +713,9 @@ export function parsePropModel(binPath) {
     const allTriangles = [];
     const materialIdSet = new Set();
     for (const rec of dlRecords) {
-        const priTris = decodeGfx(binary, rec.primaryGfxOffset, rec.vtxBinaryOffset);
+        const priTris = decodeGfx(binary, rec.primaryGfxOffset, rec.vtxBinaryOffset, rec.baseBinaryOffset);
         for (const t of priTris) {
-            if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
+            if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0016 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
                 t.a.x += rec.tx;
                 t.a.y += rec.ty;
                 t.a.z += rec.tz;
@@ -639,9 +731,9 @@ export function parsePropModel(binPath) {
                 materialIdSet.add(t.materialId);
         }
         if (rec.secondaryGfxOffset !== null) {
-            const secTris = decodeGfx(binary, rec.secondaryGfxOffset, rec.vtxBinaryOffset);
+            const secTris = decodeGfx(binary, rec.secondaryGfxOffset, rec.vtxBinaryOffset, rec.baseBinaryOffset);
             for (const t of secTris) {
-                if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
+                if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0016 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
                     t.a.x += rec.tx;
                     t.a.y += rec.ty;
                     t.a.z += rec.tz;
