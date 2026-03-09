@@ -101,22 +101,12 @@ const portals = bg.portals.sort((a, b) => a.name.localeCompare(b.name));
 const roomCenters = bg.roomCenters.sort((a, b) => a.roomIndex - b.roomIndex);
 const roomTriangles = bg.roomTriangles;
 
-// Collect unique prop model names used on this stage.
-// These setup types store a 0-based PitemZ model index in primaryIndex.
-const PROP_TYPES_WITH_MODEL = new Set([
-  "StandardProp",
-  "SingleMonitor",
-  "Door",
-  "Tank",
-  "Aircraft",
-  "Drone",
-]);
+// Collect unique prop model names used on this stage by resolving any
+// primaryIndex that maps into PitemZ_entries.
 const usedModelNames = new Set<string>();
 for (const p of propPlacements) {
-  if (PROP_TYPES_WITH_MODEL.has(p.type)) {
-    const entry = propModelEntries[p.primaryIndex];
-    if (entry) usedModelNames.add(entry.name);
-  }
+  const entry = propModelEntries[p.primaryIndex];
+  if (entry) usedModelNames.add(entry.name);
 }
 
 // Try to parse each model binary. Gracefully skips missing / undecompressable files.
@@ -153,7 +143,6 @@ const atlas = buildRunwayAtlas(repoRoot, materialIds);
 // This matches the game's own: modelSetScale(model, pitemZ.scale)
 //   followed by:              modelSetScale(model, model->scale × extraScale/256)
 const annotatedPlacements = propPlacements.map((p) => {
-  if (!PROP_TYPES_WITH_MODEL.has(p.type)) return p;
   const entry = propModelEntries[p.primaryIndex];
   if (!entry) return p;
   const renderScale = entry.scale * (p.extraScale / 256);

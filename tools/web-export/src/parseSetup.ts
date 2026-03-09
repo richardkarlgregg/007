@@ -30,24 +30,6 @@ export interface BoundPadRecord {
   };
 }
 
-/** Prop types that carry a valid pad reference in their second word. */
-const SPATIAL_PROP_TYPES = new Set([
-  "Guard",
-  "StandardProp",
-  "Door",
-  "Aircraft",
-  "Vehichle",
-  "Autogun",
-  "AmmoBox",
-  "Collectable",
-  "Tank",
-  "SingleMonitor",
-  "Key",
-  "Drone",
-  "Glass",
-  "GlassWindow",
-]);
-
 export interface PropPlacement {
   index: number;
   type: string;
@@ -140,7 +122,6 @@ export function parseSetupPropdefs(path: string): PropPlacement[] {
   let match: RegExpExecArray | null = null;
   while ((match = entryRegex.exec(block)) !== null) {
     const type = match[1];
-    if (!SPATIAL_PROP_TYPES.has(type)) continue;
 
     const index = Number.parseInt(match[2], 10);
     const extraScale = Number.parseInt(match[3], 10);

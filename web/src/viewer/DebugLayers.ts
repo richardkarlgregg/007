@@ -790,16 +790,6 @@ export interface PropLayerOptions {
   fogUniforms?: FogUniforms;
 }
 
-/** Prop types for which primaryIndex is a model index into propModelNames. */
-const PROP_TYPES_WITH_MODEL = new Set([
-  "StandardProp",
-  "SingleMonitor",
-  "Door",
-  "Tank",
-  "Aircraft",
-  "Drone",
-]);
-
 /**
  * Build a Three.js BufferGeometry from decoded prop triangles.
  * Vertex colors from the N64 shade buffer are included as vertex attributes.
@@ -1067,9 +1057,7 @@ export function buildPropsLayer(
     if (!pad && !boundPad) continue;
 
     const style = PROP_TYPE_STYLE[placement.type] ?? DEFAULT_PROP_STYLE;
-    const modelName = PROP_TYPES_WITH_MODEL.has(placement.type)
-      ? (modelNames[placement.primaryIndex] ?? null)
-      : null;
+    const modelName = modelNames[placement.primaryIndex] ?? null;
 
     const realGeo = modelName ? getPropGeo(modelName) : null;
 

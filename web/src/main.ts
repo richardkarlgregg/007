@@ -568,7 +568,7 @@ async function bootstrap(): Promise<void> {
   const propTypePanel = document.getElementById("prop-type-panel");
   const propTypeList = document.getElementById("prop-type-list");
   const propTypeEnabled = new Map<string, boolean>();
-  const DEFAULT_VISIBLE_PROP_TYPES = new Set(["StandardProp", "Door", "Tank", "Aircraft"]);
+  const DEFAULT_HIDDEN_PROP_TYPES = new Set(["AmmoBox", "Collectable", "Guard", "Hat"]);
 
   function applyPropTypeVisibility(): void {
     if (!propsLayer) return;
@@ -586,7 +586,7 @@ async function bootstrap(): Promise<void> {
     for (const p of stage.propPlacements) {
       counts.set(p.type, (counts.get(p.type) ?? 0) + 1);
       if (!propTypeEnabled.has(p.type)) {
-        propTypeEnabled.set(p.type, DEFAULT_VISIBLE_PROP_TYPES.has(p.type));
+        propTypeEnabled.set(p.type, !DEFAULT_HIDDEN_PROP_TYPES.has(p.type));
       }
     }
     const types = [...counts.keys()].sort((a, b) => a.localeCompare(b));

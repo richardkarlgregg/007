@@ -1,21 +1,4 @@
 import { readFileSync } from "node:fs";
-/** Prop types that carry a valid pad reference in their second word. */
-const SPATIAL_PROP_TYPES = new Set([
-    "Guard",
-    "StandardProp",
-    "Door",
-    "Aircraft",
-    "Vehichle",
-    "Autogun",
-    "AmmoBox",
-    "Collectable",
-    "Tank",
-    "SingleMonitor",
-    "Key",
-    "Drone",
-    "Glass",
-    "GlassWindow",
-]);
 /**
  * Parse propItemModelFileRecord.inc.c to produce a 0-indexed array of
  * { name, scale } entries matching PitemZ_entries[].
@@ -64,8 +47,6 @@ export function parseSetupPropdefs(path) {
     let match = null;
     while ((match = entryRegex.exec(block)) !== null) {
         const type = match[1];
-        if (!SPATIAL_PROP_TYPES.has(type))
-            continue;
         const index = Number.parseInt(match[2], 10);
         const extraScale = Number.parseInt(match[3], 10);
         const primaryIndex = Number.parseInt(match[4], 10);
