@@ -602,15 +602,19 @@ export function parsePropModel(binPath) {
         seenPrimary.add(rec.primaryGfxOffset);
         dlRecords.push(rec);
     }
-    // Fallback scan only fills missing primary DLs not referenced by tree.
-    for (const rec of [...scanDLCollisionRecords(binary), ...scanDisplayListRecords(binary)]) {
-        if (treeRecords.length > 0 && seenPrimary.has(rec.primaryGfxOffset))
-            continue;
-        const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}:0:0:0`;
-        if (seenKeys.has(key))
-            continue;
-        seenKeys.add(key);
-        dlRecords.push(rec);
+    // Fallback scans are only used when tree traversal yields nothing.
+    // For complex models (plane/tank), scan matches can include non-node records
+    // that decode into huge invalid spike meshes. Source traversal is authoritative.
+    if (treeRecords.length === 0) {
+        for (const rec of [...scanDLCollisionRecords(binary), ...scanDisplayListRecords(binary)]) {
+            if (seenPrimary.has(rec.primaryGfxOffset))
+                continue;
+            const key = `${rec.primaryGfxOffset}:${rec.secondaryGfxOffset ?? -1}:${rec.vtxBinaryOffset}:0:0:0`;
+            if (seenKeys.has(key))
+                continue;
+            seenKeys.add(key);
+            dlRecords.push(rec);
+        }
     }
     if (dlRecords.length === 0)
         return null;

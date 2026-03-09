@@ -1138,6 +1138,7 @@ export function buildPropsLayer(
 
     if (realGeo && modelName && !isDoor) {
       const model = propModels[modelName];
+      const placementBounds = model.sourceBounds ?? model.bounds;
       const renderScale = (placement.renderScale ?? 0.1) * stageLevelScale;
       const pose = boundPad ?? pad;
       if (!pose) continue;
@@ -1152,12 +1153,12 @@ export function buildPropsLayer(
       //  flags&8 => in-air offset by bbox ymin
       //  else    => fall-to-ground using stanGetPositionYValue + bbox ymin + 4
       if (objectFlags & 0x00000004) {
-        mesh.position.addScaledVector(up, -(model.bounds.max.y * renderScale));
+        mesh.position.addScaledVector(up, -(placementBounds.max.y * renderScale));
       } else if (objectFlags & 0x00000008) {
-        mesh.position.addScaledVector(up, -(model.bounds.min.y * renderScale));
+        mesh.position.addScaledVector(up, -(placementBounds.min.y * renderScale));
       } else if (shouldGroundToStan) {
         const groundY = sampleGroundYFromStan(pad.position.x, pad.position.z, pad.position.y);
-        const offset = -(model.bounds.min.y * renderScale);
+        const offset = -(placementBounds.min.y * renderScale);
         mesh.position.x += up.x * offset;
         mesh.position.z += up.z * offset;
         if (groundY !== null) {
@@ -1184,7 +1185,7 @@ export function buildPropsLayer(
           mesh.position.y += up.y * offset;
         }
       } else {
-        const offset = -(model.bounds.min.y * renderScale);
+        const offset = -(placementBounds.min.y * renderScale);
         mesh.position.addScaledVector(up, offset);
       }
 
@@ -1193,10 +1194,10 @@ export function buildPropsLayer(
       const yaw = mesh.rotation.y;
       const c = Math.cos(yaw);
       const s = Math.sin(yaw);
-      const x0 = model.bounds.min.x * renderScale;
-      const x1 = model.bounds.max.x * renderScale;
-      const z0 = model.bounds.min.z * renderScale;
-      const z1 = model.bounds.max.z * renderScale;
+      const x0 = placementBounds.min.x * renderScale;
+      const x1 = placementBounds.max.x * renderScale;
+      const z0 = placementBounds.min.z * renderScale;
+      const z1 = placementBounds.max.z * renderScale;
       const corners: Array<{ x: number; z: number }> = [
         { x: x0, z: z0 }, { x: x0, z: z1 }, { x: x1, z: z0 }, { x: x1, z: z1 }
       ];
@@ -1218,7 +1219,7 @@ export function buildPropsLayer(
           maxX,
           minZ,
           maxZ,
-          topY: mesh.position.y + (model.bounds.max.y * renderScale)
+          topY: mesh.position.y + (placementBounds.max.y * renderScale)
         });
       }
     }
