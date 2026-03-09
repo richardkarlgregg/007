@@ -45,6 +45,55 @@
       "metallic":  "snow_seamless_metallic.png",
       "height":    "snow_seamless_height.png",
       "heightScale": 0
+    },
+    {
+      "name": "concrete",
+      "_comment": "Concrete surface set. Fill in materialIds from poly inspector for runway/ground concrete polygons.",
+      "materialIds": [287],
+      "albedo":    "concrete_bunker_basecolor.png",
+      "normal":    "concrete_bunker_normal.png",
+      "roughness": "concrete_bunker_roughness.png",
+      "ao":        "",
+      "metallic":  "",
+      "height":    "concrete_bunker_height.png",
+      "heightScale": 0
+    },
+    {
+      "name": "tarmac",
+      "_comment": "Tarmac surface set. Fill in materialIds from poly inspector for runway/ground tarmac polygons.",
+      "materialIds": [23],
+      "albedo":    "runway_tarmac_basecolor.png",
+      "normal":    "runway_tarmac_normal.png",
+      "roughness": "runway_tarmac_roughness.png",
+      "ao":        "",
+      "metallic":  "",
+      "height":    "runway_tarmac_height.png",
+      "heightScale": 0
+    },
+    {
+      "name": "snow",
+      "_comment": "Snow surface set. Fill in materialIds from poly inspector for runway/ground snow polygons.",
+      "materialIds": [1265],
+      "albedo":    "snow_basecolor.png",
+      "normal":    "runway_tarmac_normal.png",
+      "roughness": "snow_roughness.png",
+      "ao":        "",
+      "metallic":  "",
+      "height":    "snow_height.png",
+      "heightScale": 0
+    },
+    {
+      "name": "snow_edge",
+      "_comment": "Snow edge surface set. Fill in materialIds from poly inspector for runway/ground snow edge polygons.",
+      "materialIds": [1158],
+      "albedo":    "snow_edge_basecolor.png",
+      "normal":    "snow_edge_normal.png",
+      "roughness": "snow_edge_roughness.png",
+      "ao":        "",
+      "metallic":  "",
+      "height":    "snow_edge_height.png",
+      "alpha":     "snow_edge_alpha.png",
+      "heightScale": 0
     }
   ]
 }

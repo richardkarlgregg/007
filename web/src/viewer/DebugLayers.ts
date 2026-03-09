@@ -185,6 +185,8 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   uniform vec2  uAtlasSize;
   uniform float uLookupWidth;
   uniform float uAlphaDiscardThreshold;
+  uniform float uUseTextureAlpha;
+  uniform float uLayerOpacity;
 
   // Fog — controlled directly so the G-key toggle is instant and reliable.
   uniform float uFogNear;
@@ -254,7 +256,9 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
     float fogFactor = clamp(max(distFog, heightFog), 0.0, 1.0) * uFogEnabled;
     rgb = mix(rgb, uFogColor, fogFactor);
 
-    gl_FragColor = vec4(rgb, 1.0);
+    float outAlpha = (uUseTextureAlpha > 0.5) ? tex.a : 1.0;
+    outAlpha *= uLayerOpacity;
+    gl_FragColor = vec4(rgb, outAlpha);
   }
 `;
 
@@ -298,23 +302,27 @@ export function buildBgMeshWithAtlas(
 
   // Fog uniforms are passed in by reference — updating .value fields in the
   // caller automatically propagates to the GPU on the next render frame.
-  const sharedUniforms = {
-    ...THREE.UniformsLib.lights,
-    uAtlas:       { value: atlasTexture },
-    uLookup:      { value: lookupTex },
-    uAtlasSize:   { value: new THREE.Vector2(atlas.width, atlas.height) },
-    uLookupWidth: { value: LOOKUP_WIDTH },
-    uAlphaDiscardThreshold: { value: 0.5 },
-    // Spread fog uniforms by reference so live updates from applyFog() work.
-    uFogNear:    fogUniforms.uFogNear,
-    uFogFar:     fogUniforms.uFogFar,
-    uFogColor:   fogUniforms.uFogColor,
-    uFogEnabled: fogUniforms.uFogEnabled
-  };
+  function makeAtlasUniforms(useTextureAlpha: boolean, layerOpacity: number): Record<string, THREE.IUniform> {
+    return {
+      ...THREE.UniformsLib.lights,
+      uAtlas:       { value: atlasTexture },
+      uLookup:      { value: lookupTex },
+      uAtlasSize:   { value: new THREE.Vector2(atlas.width, atlas.height) },
+      uLookupWidth: { value: LOOKUP_WIDTH },
+      uAlphaDiscardThreshold: { value: 0.5 },
+      uUseTextureAlpha: { value: useTextureAlpha ? 1.0 : 0.0 },
+      uLayerOpacity: { value: layerOpacity },
+      // Spread fog uniforms by reference so live updates from applyFog() work.
+      uFogNear:    fogUniforms.uFogNear,
+      uFogFar:     fogUniforms.uFogFar,
+      uFogColor:   fogUniforms.uFogColor,
+      uFogEnabled: fogUniforms.uFogEnabled
+    };
+  }
 
   // Base material — primary-DL geometry, no polygon offset.
   const baseMaterial = new THREE.ShaderMaterial({
-    uniforms:       sharedUniforms,
+    uniforms:       makeAtlasUniforms(false, 1.0),
     vertexShader:   ATLAS_VERTEX_SHADER,
     fragmentShader: ATLAS_FRAGMENT_SHADER,
     side:           THREE.DoubleSide,
@@ -323,80 +331,86 @@ export function buildBgMeshWithAtlas(
 
   // Decal material — secondary-DL geometry with polygon offset (ZMODE_DECAL).
   const decalMaterial = new THREE.ShaderMaterial({
-    uniforms:            sharedUniforms,
+    uniforms:            makeAtlasUniforms(true, 0.65),
     vertexShader:        ATLAS_VERTEX_SHADER,
     fragmentShader:      ATLAS_FRAGMENT_SHADER,
     side:                THREE.DoubleSide,
     lights:              true,
+    transparent:         true,
+    depthWrite:          false,
     polygonOffset:       true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits:  -4
   });
 
-  // ── Group triangles by material in display-list order ──────────────────────
-  // Track which materials have at least one secondary-DL triangle so we can
-  // assign them the decal material (polygon offset) in the viewer.
-  const materialOrder: number[] = [];
-  const byMaterial = new Map<
-    number,
-    { pos: number[]; ids: number[]; uvs: number[]; cols: number[]; triIds: number[]; hasSecondary: boolean }
-  >();
-
+  // ── Build draw-order-preserving runs ───────────────────────────────────────
+  // Use contiguous runs of (materialId, isSecondary) from the original triangle
+  // stream so renderOrder can mirror display-list order without one giant bucket
+  // per material reordering geometry.
+  interface AtlasRun {
+    materialId: number;
+    isSecondary: boolean;
+    pos: number[];
+    ids: number[];
+    uvs: number[];
+    cols: number[];
+    triIds: number[];
+  }
+  const runs: AtlasRun[] = [];
+  let currentRun: AtlasRun | null = null;
   triangles.forEach((tri, triId) => {
-    // Skip triangles whose material is handled by a PBR override.
     if (excludeIds.has(tri.materialId)) return;
-
-    if (!byMaterial.has(tri.materialId)) {
-      materialOrder.push(tri.materialId);
-      byMaterial.set(tri.materialId, { pos: [], ids: [], uvs: [], cols: [], triIds: [], hasSecondary: false });
+    if (
+      !currentRun ||
+      currentRun.materialId !== tri.materialId ||
+      currentRun.isSecondary !== tri.isSecondary
+    ) {
+      currentRun = {
+        materialId: tri.materialId,
+        isSecondary: tri.isSecondary,
+        pos: [],
+        ids: [],
+        uvs: [],
+        cols: [],
+        triIds: [],
+      };
+      runs.push(currentRun);
     }
-    const buf = byMaterial.get(tri.materialId)!;
-    if (tri.isSecondary) {
-      buf.hasSecondary = true;
-    }
-    buf.pos.push(
+    currentRun.pos.push(
       tri.a.x, tri.a.y, tri.a.z,
       tri.b.x, tri.b.y, tri.b.z,
       tri.c.x, tri.c.y, tri.c.z
     );
-    buf.ids.push(tri.materialId, tri.materialId, tri.materialId);
-    buf.uvs.push(
+    currentRun.ids.push(tri.materialId, tri.materialId, tri.materialId);
+    currentRun.uvs.push(
       tri.uvA.u / 32.0, tri.uvA.v / 32.0,
       tri.uvB.u / 32.0, tri.uvB.v / 32.0,
       tri.uvC.u / 32.0, tri.uvC.v / 32.0
     );
-    // N64 vertex shade colours (0–255 per channel).
-    buf.cols.push(
+    currentRun.cols.push(
       tri.colA.r, tri.colA.g, tri.colA.b,
       tri.colB.r, tri.colB.g, tri.colB.b,
       tri.colC.r, tri.colC.g, tri.colC.b
     );
-    buf.triIds.push(triId);
+    currentRun.triIds.push(triId);
   });
 
-  // ── Build one mesh per material ────────────────────────────────────────────
+  // ── Build one mesh per run ────────────────────────────────────────────────
   const group = new THREE.Group();
   group.name = "bg-atlas";
 
-  materialOrder.forEach((matId, orderIdx) => {
-    const buf = byMaterial.get(matId)!;
-
+  runs.forEach((run, runIdx) => {
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position",     new THREE.Float32BufferAttribute(buf.pos,  3));
-    geometry.setAttribute("aMaterialId",  new THREE.Float32BufferAttribute(buf.ids,  1));
-    geometry.setAttribute("aTexelUV",     new THREE.Float32BufferAttribute(buf.uvs,  2));
-    geometry.setAttribute("aVertexColor", new THREE.Float32BufferAttribute(buf.cols, 3));
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(run.pos, 3));
+    geometry.setAttribute("aMaterialId", new THREE.Float32BufferAttribute(run.ids, 1));
+    geometry.setAttribute("aTexelUV", new THREE.Float32BufferAttribute(run.uvs, 2));
+    geometry.setAttribute("aVertexColor", new THREE.Float32BufferAttribute(run.cols, 3));
     geometry.computeVertexNormals();
 
-    // Secondary-DL materials use decalMaterial (polygon offset) so they appear
-    // on top of co-planar primary-DL surfaces, matching GoldenEye's ZMODE_DECAL.
-    const mat = buf.hasSecondary ? decalMaterial : baseMaterial;
-
-    const mesh = new THREE.Mesh(geometry, mat);
-    mesh.name        = `bg-mat-${matId}`;
-    mesh.userData.triangleIds = buf.triIds;
-    // Higher renderOrder = drawn later = wins depth ties with earlier layers.
-    mesh.renderOrder = orderIdx;
+    const mesh = new THREE.Mesh(geometry, run.isSecondary ? decalMaterial : baseMaterial);
+    mesh.name = `bg-run-${runIdx}-mat-${run.materialId}-${run.isSecondary ? "secondary" : "primary"}`;
+    mesh.userData.triangleIds = run.triIds;
+    mesh.renderOrder = runIdx;
     group.add(mesh);
   });
 
@@ -426,11 +440,16 @@ export function buildPbrOverrideMeshes(
   for (const override of overrides) {
     if (override.materialIds.size === 0) continue;
 
-    // Build separate buffers per material ID so UV normalisation uses the
-    // correct texel size for each atlas item.
+    // Build separate buffers per material ID and per display-list layer so UV
+    // normalisation uses the correct texel size and decal ordering is preserved.
+    interface PbrLayerBuffer {
+      pos: number[];
+      uvs: number[];
+      triIds: number[];
+    }
     const byMat = new Map<
       number,
-      { pos: number[]; uvs: number[]; triIds: number[] }
+      { primary: PbrLayerBuffer; secondary: PbrLayerBuffer }
     >();
 
     triangles.forEach((tri, triId) => {
@@ -439,9 +458,13 @@ export function buildPbrOverrideMeshes(
       if (!item) return; // no atlas entry — skip
 
       if (!byMat.has(tri.materialId)) {
-        byMat.set(tri.materialId, { pos: [], uvs: [], triIds: [] });
+        byMat.set(tri.materialId, {
+          primary: { pos: [], uvs: [], triIds: [] },
+          secondary: { pos: [], uvs: [], triIds: [] }
+        });
       }
-      const buf = byMat.get(tri.materialId)!;
+      const layers = byMat.get(tri.materialId)!;
+      const buf = tri.isSecondary ? layers.secondary : layers.primary;
       const uw = item.width;
       const uh = item.height;
 
@@ -463,25 +486,8 @@ export function buildPbrOverrideMeshes(
 
     if (byMat.size === 0) continue;
 
-    // Merge all per-material buffers into one geometry for this override entry.
-    const allPos: number[] = [];
-    const allUvs: number[] = [];
-    const allTriIds: number[] = [];
-    for (const buf of byMat.values()) {
-      for (const v of buf.pos)    allPos.push(v);
-      for (const v of buf.uvs)    allUvs.push(v);
-      for (const v of buf.triIds) allTriIds.push(v);
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(allPos, 3));
-    geometry.setAttribute("uv",       new THREE.Float32BufferAttribute(allUvs, 2));
-    // uv2 is required by THREE.MeshStandardMaterial's aoMap.
-    geometry.setAttribute("uv2",      new THREE.Float32BufferAttribute(allUvs, 2));
-    geometry.computeVertexNormals();
-
     const { maps } = override;
-    const mat = new THREE.MeshStandardMaterial({
+    const baseMat = new THREE.MeshStandardMaterial({
       side:    THREE.DoubleSide,
       // Colour maps
       map:             maps.albedo,
@@ -491,25 +497,60 @@ export function buildPbrOverrideMeshes(
       aoMap:           maps.ao,
       aoMapIntensity:  1.0,
       metalnessMap:    maps.metallic,
+      alphaMap:        maps.alpha,
+      transparent:     Boolean(maps.alpha),
       displacementMap: maps.height,
       displacementScale: maps.heightScale,
       // When a map is provided the scalar must be 1.0 so the map drives the
       // value fully.  Without a map, use sensible physical defaults for rock/snow.
       metalness: maps.metallic  ? 1.0 : 0.0,
       roughness: maps.roughness ? 1.0 : 0.75,
+      alphaTest: maps.alpha ? 0.5 : 0.0,
       // Polygon offset pushes PBR geometry closer to the camera than the
       // co-planar atlas mesh so it wins depth tests without z-fighting.
       polygonOffset:       true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits:  -4
     });
+    const decalMat = baseMat.clone();
+    decalMat.depthWrite = false;
+    decalMat.polygonOffsetFactor = -3;
+    decalMat.polygonOffsetUnits = -6;
 
-    const mesh = new THREE.Mesh(geometry, mat);
-    mesh.name = `pbr-override-${override.name}`;
-    mesh.userData.triangleIds = allTriIds;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
+    function addPbrLayer(
+      layerName: "primary" | "secondary",
+      mat: THREE.MeshStandardMaterial,
+      renderOrder: number
+    ): void {
+      const allPos: number[] = [];
+      const allUvs: number[] = [];
+      const allTriIds: number[] = [];
+      for (const layers of byMat.values()) {
+        const buf = layers[layerName];
+        for (const v of buf.pos) allPos.push(v);
+        for (const v of buf.uvs) allUvs.push(v);
+        for (const v of buf.triIds) allTriIds.push(v);
+      }
+      if (allPos.length === 0) return;
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(allPos, 3));
+      geometry.setAttribute("uv", new THREE.Float32BufferAttribute(allUvs, 2));
+      // uv2 is required by THREE.MeshStandardMaterial's aoMap.
+      geometry.setAttribute("uv2", new THREE.Float32BufferAttribute(allUvs, 2));
+      geometry.computeVertexNormals();
+
+      const mesh = new THREE.Mesh(geometry, mat);
+      mesh.name = `pbr-override-${override.name}-${layerName}`;
+      mesh.userData.triangleIds = allTriIds;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.renderOrder = renderOrder;
+      group.add(mesh);
+    }
+
+    addPbrLayer("primary", baseMat, 0);
+    addPbrLayer("secondary", decalMat, 1);
   }
 
   return group;
@@ -591,6 +632,7 @@ export function buildRemasterPlaceholderMeshes(
     side: THREE.DoubleSide,
     color: 0xf0f0f0,
     map: placeholderMap,
+    depthWrite: false,
     metalness: 0.0,
     roughness: 0.92,
     polygonOffset: true,
@@ -973,6 +1015,7 @@ export function buildPropsLayer(
         // Do not globally alpha-discard props: several prop textures use alpha
         // channels for shading data, and hard discard can punch out valid faces.
         uAlphaDiscardThreshold: { value: 0.0 },
+        uUseTextureAlpha: { value: 0.0 },
         uFogNear:     fogUniforms.uFogNear,
         uFogFar:      fogUniforms.uFogFar,
         uFogColor:    fogUniforms.uFogColor,

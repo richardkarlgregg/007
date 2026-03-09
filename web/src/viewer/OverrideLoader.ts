@@ -21,6 +21,7 @@ export interface MaterialOverrideConfig {
   roughness?: string;
   ao?: string;
   metallic?: string;
+  alpha?: string;
   /** Height / displacement map.  Requires a subdivided mesh to look good on
    *  low-poly N64 geometry; set heightScale to 0 to disable. */
   height?: string;
@@ -41,6 +42,7 @@ export interface LoadedPbrMaps {
   roughness?: THREE.Texture;
   ao?: THREE.Texture;
   metallic?: THREE.Texture;
+  alpha?: THREE.Texture;
   height?: THREE.Texture;
   heightScale: number;
 }
@@ -106,6 +108,7 @@ export async function loadOverrides(
     if (cfg.roughness) maps.roughness = markLinear(await tryLoad(loader, `${base}${cfg.roughness}`));
     if (cfg.ao)        maps.ao        = markLinear(await tryLoad(loader, `${base}${cfg.ao}`));
     if (cfg.metallic)  maps.metallic  = markLinear(await tryLoad(loader, `${base}${cfg.metallic}`));
+    if (cfg.alpha)     maps.alpha     = markLinear(await tryLoad(loader, `${base}${cfg.alpha}`));
     if (cfg.height)    maps.height    = markLinear(await tryLoad(loader, `${base}${cfg.height}`));
 
     console.log(
