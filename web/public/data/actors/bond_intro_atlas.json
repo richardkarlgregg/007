@@ -1,0 +1,175 @@
+{
+  "atlasImage": "bond_intro_atlas.png",
+  "width": 2048,
+  "height": 68,
+  "items": {
+    "230": {
+      "x": 2,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "229"
+    },
+    "305": {
+      "x": 36,
+      "y": 2,
+      "width": 64,
+      "height": 32,
+      "decoded": true,
+      "imageName": "304"
+    },
+    "494": {
+      "x": 102,
+      "y": 2,
+      "width": 32,
+      "height": 64,
+      "decoded": true,
+      "imageName": "493"
+    },
+    "1154": {
+      "x": 136,
+      "y": 2,
+      "width": 64,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1153"
+    },
+    "1155": {
+      "x": 202,
+      "y": 2,
+      "width": 64,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1154"
+    },
+    "1607": {
+      "x": 268,
+      "y": 2,
+      "width": 64,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1606"
+    },
+    "1610": {
+      "x": 334,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1609"
+    },
+    "1614": {
+      "x": 368,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1613"
+    },
+    "1617": {
+      "x": 402,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1616"
+    },
+    "1620": {
+      "x": 436,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1619"
+    },
+    "1623": {
+      "x": 470,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1622"
+    },
+    "1633": {
+      "x": 504,
+      "y": 2,
+      "width": 32,
+      "height": 48,
+      "decoded": true,
+      "imageName": "1632"
+    },
+    "1634": {
+      "x": 538,
+      "y": 2,
+      "width": 32,
+      "height": 48,
+      "decoded": true,
+      "imageName": "1633"
+    },
+    "1635": {
+      "x": 572,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1634"
+    },
+    "1636": {
+      "x": 606,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1635"
+    },
+    "1637": {
+      "x": 640,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1636"
+    },
+    "1638": {
+      "x": 674,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "1637"
+    },
+    "2004": {
+      "x": 708,
+      "y": 2,
+      "width": 32,
+      "height": 64,
+      "decoded": true,
+      "imageName": "2003"
+    },
+    "2005": {
+      "x": 742,
+      "y": 2,
+      "width": 32,
+      "height": 64,
+      "decoded": true,
+      "imageName": "2004"
+    },
+    "2010": {
+      "x": 776,
+      "y": 2,
+      "width": 32,
+      "height": 32,
+      "decoded": true,
+      "imageName": "2009"
+    },
+    "2011": {
+      "x": 810,
+      "y": 2,
+      "width": 32,
+      "height": 64,
+      "decoded": true,
+      "imageName": "2010"
+    }
+  }
+}

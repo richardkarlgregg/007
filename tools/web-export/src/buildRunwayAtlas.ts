@@ -933,7 +933,11 @@ function blitRgba(
 // ---------------------------------------------------------------------------
 // buildRunwayAtlas
 // ---------------------------------------------------------------------------
-export function buildRunwayAtlas(repoRoot: string, materialIds: number[]): AtlasManifest {
+export function buildRunwayAtlas(
+  repoRoot: string,
+  materialIds: number[],
+  outputOptions?: { dir: string; prefix: string }
+): AtlasManifest {
   const imageNames = parseImageNames(path.resolve(repoRoot, "assets/images.def"));
   const inputIds = [...new Set(materialIds)].sort((a, b) => a - b);
 
@@ -1023,12 +1027,15 @@ export function buildRunwayAtlas(repoRoot: string, materialIds: number[]): Atlas
     blitRgba(atlasPixels, atlasWidth, image.rgba, image.width, image.height, spot.x, spot.y);
   }
 
-  const outputDir = path.resolve(repoRoot, "web/public/data/stages");
+  const outputDir = outputOptions
+    ? path.resolve(outputOptions.dir)
+    : path.resolve(repoRoot, "web/public/data/stages");
+  const prefix = outputOptions?.prefix ?? "runway";
   mkdirSync(outputDir, { recursive: true });
 
   const png = new PNG({ width: atlasWidth, height: atlasHeight });
   png.data = Buffer.from(atlasPixels);
-  const atlasPngPath = path.resolve(outputDir, "runway_atlas.png");
+  const atlasPngPath = path.resolve(outputDir, `${prefix}_atlas.png`);
   writeFileSync(atlasPngPath, PNG.sync.write(png));
 
   const items: Record<string, AtlasItem> = {};
@@ -1037,13 +1044,13 @@ export function buildRunwayAtlas(repoRoot: string, materialIds: number[]): Atlas
   }
 
   const manifest: AtlasManifest = {
-    atlasImage: "runway_atlas.png",
+    atlasImage: `${prefix}_atlas.png`,
     width: atlasWidth,
     height: atlasHeight,
     items
   };
 
-  const manifestPath = path.resolve(outputDir, "runway_atlas.json");
+  const manifestPath = path.resolve(outputDir, `${prefix}_atlas.json`);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
   return manifest;

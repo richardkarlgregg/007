@@ -265,6 +265,60 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+const ATLAS_LOOKUP_WIDTH = 2500;
+
+/**
+ * Build a reusable atlas ShaderMaterial suitable for character and prop meshes.
+ * The returned material owns a 1-D lookup DataTexture for material → atlas UV.
+ */
+export function buildAtlasMaterial(
+  atlas: AtlasManifest,
+  atlasTexture: THREE.Texture,
+  fogUniforms: FogUniforms = makeFogUniforms()
+): THREE.ShaderMaterial {
+  const lookupData = new Float32Array(ATLAS_LOOKUP_WIDTH * 4);
+  for (const [idStr, item] of Object.entries(atlas.items)) {
+    const id = parseInt(idStr, 10);
+    if (id >= 0 && id < ATLAS_LOOKUP_WIDTH) {
+      lookupData[id * 4 + 0] = item.x;
+      lookupData[id * 4 + 1] = item.y;
+      lookupData[id * 4 + 2] = item.width;
+      lookupData[id * 4 + 3] = item.height;
+    }
+  }
+  const lookupTex = new THREE.DataTexture(lookupData, ATLAS_LOOKUP_WIDTH, 1, THREE.RGBAFormat, THREE.FloatType);
+  lookupTex.magFilter = THREE.NearestFilter;
+  lookupTex.minFilter = THREE.NearestFilter;
+  lookupTex.needsUpdate = true;
+
+  atlasTexture.flipY     = false;
+  atlasTexture.wrapS     = THREE.ClampToEdgeWrapping;
+  atlasTexture.wrapT     = THREE.ClampToEdgeWrapping;
+  atlasTexture.magFilter = THREE.NearestFilter;
+  atlasTexture.minFilter = THREE.NearestFilter;
+  atlasTexture.needsUpdate = true;
+
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      ...THREE.UniformsLib.lights,
+      uAtlas:       { value: atlasTexture },
+      uLookup:      { value: lookupTex },
+      uAtlasSize:   { value: new THREE.Vector2(atlas.width, atlas.height) },
+      uLookupWidth: { value: ATLAS_LOOKUP_WIDTH },
+      uAlphaDiscardThreshold: { value: 0.0 },
+      uUseTextureAlpha: { value: 0.0 },
+      uFogNear:    fogUniforms.uFogNear,
+      uFogFar:     fogUniforms.uFogFar,
+      uFogColor:   fogUniforms.uFogColor,
+      uFogEnabled: fogUniforms.uFogEnabled,
+    },
+    vertexShader:   ATLAS_VERTEX_SHADER,
+    fragmentShader: ATLAS_FRAGMENT_SHADER,
+    side:           THREE.DoubleSide,
+    lights:         true,
+  });
+}
+
 export function buildBgMeshWithAtlas(
   triangles: RoomTriangle[],
   atlas: AtlasManifest,
@@ -843,7 +897,7 @@ export interface PropLayerOptions {
  * Build a Three.js BufferGeometry from decoded prop triangles.
  * Vertex colors from the N64 shade buffer are included as vertex attributes.
  */
-function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
+export function buildPropGeometry(geo: PropModelGeometry): THREE.BufferGeometry {
   const positions: number[] = [];
   const materialIds: number[] = [];
   const texelUvs: number[] = [];

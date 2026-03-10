@@ -799,7 +799,7 @@ function blitRgba(dst, dstWidth, src, srcWidth, srcHeight, dx, dy) {
 // ---------------------------------------------------------------------------
 // buildRunwayAtlas
 // ---------------------------------------------------------------------------
-export function buildRunwayAtlas(repoRoot, materialIds) {
+export function buildRunwayAtlas(repoRoot, materialIds, outputOptions) {
     const imageNames = parseImageNames(path.resolve(repoRoot, "assets/images.def"));
     const inputIds = [...new Set(materialIds)].sort((a, b) => a - b);
     const decodedById = new Map();
@@ -878,23 +878,26 @@ export function buildRunwayAtlas(repoRoot, materialIds) {
             continue;
         blitRgba(atlasPixels, atlasWidth, image.rgba, image.width, image.height, spot.x, spot.y);
     }
-    const outputDir = path.resolve(repoRoot, "web/public/data/stages");
+    const outputDir = outputOptions
+        ? path.resolve(outputOptions.dir)
+        : path.resolve(repoRoot, "web/public/data/stages");
+    const prefix = outputOptions?.prefix ?? "runway";
     mkdirSync(outputDir, { recursive: true });
     const png = new PNG({ width: atlasWidth, height: atlasHeight });
     png.data = Buffer.from(atlasPixels);
-    const atlasPngPath = path.resolve(outputDir, "runway_atlas.png");
+    const atlasPngPath = path.resolve(outputDir, `${prefix}_atlas.png`);
     writeFileSync(atlasPngPath, PNG.sync.write(png));
     const items = {};
     for (const [id, item] of placements) {
         items[String(id)] = item;
     }
     const manifest = {
-        atlasImage: "runway_atlas.png",
+        atlasImage: `${prefix}_atlas.png`,
         width: atlasWidth,
         height: atlasHeight,
         items
     };
-    const manifestPath = path.resolve(outputDir, "runway_atlas.json");
+    const manifestPath = path.resolve(outputDir, `${prefix}_atlas.json`);
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     return manifest;
 }

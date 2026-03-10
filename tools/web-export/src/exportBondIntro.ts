@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildRunwayAtlas, type AtlasManifest } from "./buildRunwayAtlas.js";
 import {
   parseModelGraph,
   parseModelJoints,
@@ -15,6 +16,7 @@ import {
 import { parsePropModelEntries, parseSetupIntro } from "./parseSetup.js";
 
 interface BondIntroAsset {
+  atlas?: AtlasManifest;
   actor: {
     name: string;
     modelHint: string;
@@ -179,8 +181,33 @@ const data: BondIntroAsset = {
   ],
 };
 
+// Collect all materialIds used across body/head graph chunks and legacy models
+const allMaterialIds = new Set<number>();
+const addFromGraph = (graph: ModelGraphData): void => {
+  for (const chunk of graph.chunks) {
+    for (const id of chunk.materialIds) if (id > 0) allMaterialIds.add(id);
+  }
+};
+const addFromGeo = (geo: PropModelGeometry | null): void => {
+  if (!geo) return;
+  for (const id of geo.materialIds) if (id > 0) allMaterialIds.add(id);
+};
+addFromGraph(bodyGraph);
+addFromGraph(headGraph);
+addFromGeo(bodyGeo);
+addFromGeo(headGeo);
+addFromGeo(gunGeo);
+
 const outputDir = path.resolve(repoRoot, "web/public/data/actors");
 mkdirSync(outputDir, { recursive: true });
+
+const atlas = buildRunwayAtlas(repoRoot, [...allMaterialIds], {
+  dir: outputDir,
+  prefix: "bond_intro",
+});
+data.atlas = atlas;
+console.log(`Atlas: ${atlas.width}×${atlas.height}px, ${Object.keys(atlas.items).length} textures`);
+
 const outputPath = path.resolve(outputDir, "bond_intro.json");
 writeFileSync(outputPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 console.log(`Export complete: ${normalizePath(path.relative(repoRoot, outputPath))}`);

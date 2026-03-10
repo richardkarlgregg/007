@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import type { ModelGraphData, ModelGraphNode, PropModelGeometry } from "./StageLoader";
+import type { AtlasManifest, ModelGraphData, ModelGraphNode, PropModelGeometry } from "./StageLoader";
+import { buildAtlasMaterial, buildPropGeometry, type FogUniforms } from "./DebugLayers";
 
 interface BondClipKeyframe {
   t: number;
@@ -15,6 +16,7 @@ interface BondClip {
 }
 
 interface BondIntroAsset {
+  atlas?: AtlasManifest;
   actor: {
     name: string;
     modelHint: string;
@@ -83,25 +85,37 @@ export class BondIntroActor {
   private readonly gunMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
   private bodyGraphRuntime: GraphRuntime | null = null;
   private headGraphRuntime: GraphRuntime | null = null;
+  private lodLevel = 0;
 
-  constructor(private readonly asset: BondIntroAsset, worldScale = 1.0, enableGraphRuntime = true) {
+  setLodLevel(level: number): void {
+    this.lodLevel = level;
+    if (this.bodyGraphRuntime) applyGraphRelations(this.bodyGraphRuntime, this.lodLevel);
+  }
+
+  constructor(
+    private readonly asset: BondIntroAsset,
+    worldScale = 1.0,
+    enableGraphRuntime = true,
+    atlasTexture?: THREE.Texture,
+    fogUniforms?: FogUniforms,
+  ) {
     if (!asset.clips[0]) {
       throw new Error("Bond intro asset missing required clip");
     }
     this.clip = asset.clips[0];
     this.clipDuration = Math.max(0.001, this.clip.durationSec);
 
+    // Build atlas material if atlas data + texture are available; otherwise fall
+    // back to the debug checker material so the skeleton is always renderable.
+    const atlasMat = (asset.atlas && atlasTexture)
+      ? buildAtlasMaterial(asset.atlas, atlasTexture, fogUniforms)
+      : null;
+
     if (enableGraphRuntime && asset.graph?.body?.nodes?.length && asset.graph?.body?.chunks?.length) {
-      this.bodyGraphRuntime = buildGraphRuntime(
-        asset.graph.body,
-        new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true })
-      );
+      this.bodyGraphRuntime = buildGraphRuntime(asset.graph.body, atlasMat);
       this.bodyPivot.add(this.bodyGraphRuntime.root);
       if (asset.graph.head?.nodes?.length && asset.graph.head?.chunks?.length) {
-        this.headGraphRuntime = buildGraphRuntime(
-          asset.graph.head,
-          new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true })
-        );
+        this.headGraphRuntime = buildGraphRuntime(asset.graph.head, atlasMat);
         const headPlaceholderId = asset.graph.body.headPlaceholderNodeId;
         const headPlaceholderNode = headPlaceholderId !== null
           ? this.bodyGraphRuntime.nodesById.get(headPlaceholderId)
@@ -112,7 +126,7 @@ export class BondIntroActor {
           this.bodyPivot.add(this.headGraphRuntime.root);
         }
       }
-      applyGraphRelations(this.bodyGraphRuntime);
+      applyGraphRelations(this.bodyGraphRuntime, this.lodLevel);
     } else {
       const bodyMesh = meshFromPropModel(
         asset.models.body,
@@ -181,7 +195,7 @@ export class BondIntroActor {
     this.bodyPivot.rotation.y = pose.yawRad;
     this.bodyPivot.rotation.z = pose.lean;
     if (this.bodyGraphRuntime) {
-      applyGraphRelations(this.bodyGraphRuntime);
+      applyGraphRelations(this.bodyGraphRuntime, this.lodLevel);
     }
     return pose;
   }
@@ -210,12 +224,13 @@ interface GraphRuntime {
 
 function buildGraphRuntime(
   graph: ModelGraphData,
-  _material: THREE.Material,
+  atlasMaterial: THREE.ShaderMaterial | null,
   targetRadius?: number
 ): GraphRuntime {
   const root = new THREE.Group();
   const nodesById = new Map<number, GraphRuntimeNode>();
-  const debugMap = getBondDebugCheckerTexture();
+  // Fallback debug checker material used when no atlas is available.
+  const debugMap = atlasMaterial ? null : getBondDebugCheckerTexture();
   for (const def of graph.nodes) {
     const object = new THREE.Object3D();
     if (def.origin) object.position.set(def.origin.x, def.origin.y, def.origin.z);
@@ -232,12 +247,20 @@ function buildGraphRuntime(
       bounds: chunk.bounds,
       sourceBounds: graph.sourceBounds,
     };
-    const mat = new THREE.MeshBasicMaterial({
-      color: colorFromNodeId(chunk.nodeId),
-      map: debugMap,
-      side: THREE.DoubleSide,
-    });
-    const mesh = meshFromPropModel(tempGeo, mat, false);
+    let mesh: THREE.Mesh;
+    if (atlasMaterial) {
+      // Use the same atlas geometry builder as props so the shader attributes
+      // (aMaterialId, aTexelUV, aVertexColor) are all present.
+      const geo = buildPropGeometry(tempGeo);
+      mesh = new THREE.Mesh(geo, atlasMaterial);
+    } else {
+      const mat = new THREE.MeshBasicMaterial({
+        color: colorFromNodeId(chunk.nodeId),
+        map: debugMap!,
+        side: THREE.DoubleSide,
+      });
+      mesh = meshFromPropModel(tempGeo, mat, false);
+    }
     const node = nodesById.get(chunk.nodeId);
     if (node) node.object.add(mesh);
   }
@@ -313,8 +336,22 @@ function colorFromNodeId(id: number): THREE.Color {
   return new THREE.Color().setHSL(hue, 0.55, 0.62);
 }
 
-function applyGraphRelations(runtime: GraphRuntime): void {
+/**
+ * Activate the correct subset of graph nodes matching the requested LOD level.
+ * lodLevel 0 = highest quality (first/nearest LOD per group, default).
+ * lodLevel 1 = second quality level. lodLevel -1 = show all LOD levels.
+ *
+ * Mirrors native modelUpdateMatrices / modelApply* traversal:
+ *   - SWITCH (0x12): descend into controlsNodeId (default visible=true)
+ *   - LOD (0x08): only activate the Nth sibling LOD for each body part
+ *   - All others: descend into childId then follow nextId chain
+ */
+function applyGraphRelations(runtime: GraphRuntime, lodLevel = 0): void {
   const active = new Set<number>();
+  // Track how many LOD nodes we've encountered per parent — used to pick
+  // the correct LOD level in each sibling chain.
+  const lodCountByParent = new Map<number | null, number>();
+
   const visitList = (startId: number | null | undefined): void => {
     let cur = startId;
     let guard = 0;
@@ -323,10 +360,23 @@ function applyGraphRelations(runtime: GraphRuntime): void {
       if (active.has(cur)) break;
       const n = runtime.nodesById.get(cur);
       if (!n) break;
+
+      if (n.def.opcode === 0x08) {
+        // LOD node: track which index within the sibling LOD group this is.
+        const parentId = n.def.parentId ?? null;
+        const count = lodCountByParent.get(parentId) ?? 0;
+        lodCountByParent.set(parentId, count + 1);
+        // Skip this LOD if it doesn't match the requested level.
+        // lodLevel -1 means show all levels.
+        if (lodLevel >= 0 && count !== lodLevel) {
+          cur = n.def.nextId;
+          continue;
+        }
+      }
+
       active.add(cur);
 
       let childStart: number | null | undefined = n.def.childId;
-      // Mirror modelApply* relation rewiring semantics at traversal time.
       if (n.def.opcode === 0x12) {
         childStart = n.def.controlsNodeId ?? n.def.childId;
       } else if (n.def.opcode === 0x08) {
@@ -476,6 +526,8 @@ function applyTargetRadiusScale(geometry: THREE.BufferGeometry, targetRadius: nu
 
 export interface BondIntroLoadOptions {
   forceLegacy?: boolean;
+  atlasTexture?: THREE.Texture;
+  fogUniforms?: FogUniforms;
 }
 
 export async function loadBondIntroAsset(path: string, worldScale = 1.0, options: BondIntroLoadOptions = {}): Promise<BondIntroActor> {
@@ -484,5 +536,5 @@ export async function loadBondIntroAsset(path: string, worldScale = 1.0, options
     throw new Error(`Failed to load Bond intro asset: ${response.status}`);
   }
   const asset = (await response.json()) as BondIntroAsset;
-  return new BondIntroActor(asset, worldScale, !options.forceLegacy);
+  return new BondIntroActor(asset, worldScale, !options.forceLegacy, options.atlasTexture, options.fogUniforms);
 }
