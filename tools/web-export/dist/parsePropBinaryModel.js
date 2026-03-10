@@ -894,6 +894,45 @@ function filterChrTrianglesBySourceBounds(triangles, sourceBounds) {
     });
     return deSpiked.length > 0 ? deSpiked : filtered;
 }
+/**
+ * Per-chunk spike filter for joint-local geometry in the graph model pipeline.
+ *
+ * `filterChrTrianglesBySourceBounds` uses model-space sourceBounds against
+ * joint-local vertex coordinates — wrong coordinate frame.  When the joint
+ * origin is, say, (-95, -107, 0) from the hip, the joint-local vertex
+ * magnitudes are small (e.g. ~115 for a thigh centred near that pivot) but
+ * distal-end vertices at the knee can have magnitudes of ~400+.  Using 99th
+ * percentile × 1.15 would set the threshold at ~133, incorrectly culling the
+ * entire knee-end of the limb and causing the "pieces don't fit" gap at every
+ * joint boundary.
+ *
+ * This filter instead uses a lenient multiple of the MEDIAN magnitude so only
+ * true outlier spikes (decode garbage) are removed while all valid geometry
+ * extending along the bone axis is preserved.
+ */
+function filterChunkByMagnitude(triangles, maxMultiple) {
+    if (triangles.length === 0)
+        return triangles;
+    const mags = [];
+    for (const t of triangles) {
+        for (const v of [t.a, t.b, t.c]) {
+            mags.push(Math.max(Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)));
+        }
+    }
+    mags.sort((a, b) => a - b);
+    const median = mags[Math.floor(mags.length / 2)];
+    if (!(median > 0))
+        return triangles;
+    const threshold = median * maxMultiple;
+    const filtered = triangles.filter((t) => {
+        for (const v of [t.a, t.b, t.c]) {
+            if (Math.max(Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)) > threshold)
+                return false;
+        }
+        return true;
+    });
+    return filtered.length > 0 ? filtered : triangles;
+}
 // ─── Main export ─────────────────────────────────────────────────────────────
 /**
  * Parse a prop model binary file extracted from the GoldenEye ROM.
@@ -1135,8 +1174,13 @@ export function parseModelGraph(binPath) {
         // Collect geometry from DL / DLPRIMARY / DLCOLLISION nodes
         const pushChunk = (trianglesRaw) => {
             let triangles = trianglesRaw;
-            if (isChrModel && sourceBounds) {
-                triangles = filterChrTrianglesBySourceBounds(triangles, sourceBounds);
+            if (isChrModel && triangles.length > 0) {
+                // Use per-chunk median-based filter: removes only true outlier spikes
+                // (decode garbage), preserving valid distal-end geometry at joint
+                // boundaries.  filterChrTrianglesBySourceBounds is intentionally NOT
+                // used here because it compares joint-local vertices against model-space
+                // sourceBounds, causing it to cull the knee/elbow ends of every limb.
+                triangles = filterChunkByMagnitude(triangles, 8.0);
             }
             if (triangles.length === 0)
                 return;
