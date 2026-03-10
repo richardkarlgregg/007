@@ -151,3 +151,88 @@ export function parseSetupPad3dlist(path) {
     }
     return results;
 }
+function parseNumericToken(raw) {
+    const token = raw.trim();
+    if (token.length === 0)
+        return 0;
+    return Number(token);
+}
+function parsePayloadInts(entryBody) {
+    const mkwordEnd = entryBody.indexOf(")),");
+    const payload = mkwordEnd >= 0 ? entryBody.slice(mkwordEnd + 3) : entryBody;
+    const nums = payload.match(/-?0x[0-9a-fA-F]+|-?\d+/g) ?? [];
+    return nums.map(parseNumericToken);
+}
+/**
+ * Parse setup intro[] records from setup C source.
+ *
+ * This is intentionally type-focused for web runtime parity:
+ * Spawn / StartWeapon / StartAmmo / SwirlCam / FixedCam plus watch/cuff fields.
+ */
+export function parseSetupIntro(path) {
+    const source = readFileSync(path, "utf8");
+    const blockMatch = source.match(/s32\s+intro\[\]\s*=\s*\{([\s\S]*?)\n\};/);
+    if (!blockMatch) {
+        throw new Error(`Could not find intro[] in ${path}`);
+    }
+    const intro = {
+        spawns: [],
+        startWeapons: [],
+        startAmmo: [],
+        swirlCams: [],
+        fixedCams: [],
+    };
+    const entryRegex = /\/\* Type = ([^;]+); index = (\d+) \*\/([\s\S]*?)(?=\/\* Type =|$)/g;
+    const block = blockMatch[1];
+    let match = null;
+    while ((match = entryRegex.exec(block)) !== null) {
+        const type = match[1].trim();
+        const body = match[3];
+        const ints = parsePayloadInts(body);
+        if (type === "Spawn" && ints.length >= 2) {
+            intro.spawns.push({ pad: ints[0], isDemoPlayback: ints[1] });
+            continue;
+        }
+        if (type === "StartWeapon" && ints.length >= 3) {
+            intro.startWeapons.push({
+                itemRight: ints[0],
+                itemLeft: ints[1],
+                isDemoPlayback: ints[2],
+            });
+            continue;
+        }
+        if (type === "StartAmmo" && ints.length >= 3) {
+            intro.startAmmo.push({
+                ammoType: ints[0],
+                amount: ints[1],
+                isDemoPlayback: ints[2],
+            });
+            continue;
+        }
+        if (type === "SwirlCam" && ints.length >= 7) {
+            intro.swirlCams.push({
+                animSlot: ints[0],
+                x: ints[1],
+                y: ints[2],
+                z: ints[3],
+                theta: ints[4],
+                verta: ints[5],
+                duration: ints[6],
+            });
+            continue;
+        }
+        if (type === "FixedCam" && ints.length > 0) {
+            intro.fixedCams.push({ raw: ints });
+            continue;
+        }
+        if (type === "WatchTime" && ints.length >= 2) {
+            intro.watchTimeSeconds = ints[0];
+            intro.watchTimeTenths = ints[1];
+            continue;
+        }
+        if (type === "Cuff" && ints.length >= 1) {
+            intro.cuffFlags = ints[0];
+        }
+    }
+    return intro;
+}

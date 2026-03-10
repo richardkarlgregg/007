@@ -167,6 +167,88 @@ export interface PropModelGeometry {
   };
 }
 
+export interface ModelGraphSwitchEntry {
+  index: number;
+  nodeId: number;
+}
+
+export interface ModelGraphNode {
+  id: number;
+  opcode: number;
+  parentId: number | null;
+  nextId: number | null;
+  childId: number | null;
+  origin?: Vec3;
+  controlsNodeId?: number | null;
+  affectsNodeId?: number | null;
+  leftNodeId?: number | null;
+  rightNodeId?: number | null;
+}
+
+export interface ModelGraphChunk {
+  nodeId: number;
+  triangles: PropTriangle[];
+  materialIds: number[];
+  bounds: {
+    min: Vec3;
+    max: Vec3;
+  };
+}
+
+export interface ModelGraphData {
+  rootNodeId: number;
+  nodes: ModelGraphNode[];
+  switchTable: ModelGraphSwitchEntry[];
+  headPlaceholderNodeId: number | null;
+  chunks: ModelGraphChunk[];
+  sourceBounds?: {
+    min: Vec3;
+    max: Vec3;
+  };
+}
+
+export interface IntroSpawnRecord {
+  pad: number;
+  isDemoPlayback: number;
+}
+
+export interface IntroStartWeaponRecord {
+  itemRight: number;
+  itemLeft: number;
+  isDemoPlayback: number;
+}
+
+export interface IntroStartAmmoRecord {
+  ammoType: number;
+  amount: number;
+  isDemoPlayback: number;
+}
+
+export interface IntroSwirlCamRecord {
+  animSlot: number;
+  x: number;
+  y: number;
+  z: number;
+  theta: number;
+  verta: number;
+  duration: number;
+}
+
+export interface IntroFixedCamRecord {
+  raw: number[];
+}
+
+export interface StageIntroData {
+  spawns: IntroSpawnRecord[];
+  startWeapons: IntroStartWeaponRecord[];
+  startAmmo: IntroStartAmmoRecord[];
+  swirlCams: IntroSwirlCamRecord[];
+  fixedCams: IntroFixedCamRecord[];
+  watchTimeSeconds?: number;
+  watchTimeTenths?: number;
+  cuffFlags?: number;
+}
+
 export interface StageData {
   stage: string;
   /** src/game/bg.c levelinfotable[].levelscale for this stage. */
@@ -182,6 +264,7 @@ export interface StageData {
   portals: Portal[];
   roomCenters: RoomCenter[];
   roomTriangles: RoomTriangle[];
+  intro?: StageIntroData;
   atlas?: AtlasManifest;
   /** Spatial prop placements parsed from the setup file's propDefs[]. */
   propPlacements?: PropPlacement[];

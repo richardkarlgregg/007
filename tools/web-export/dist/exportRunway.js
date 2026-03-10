@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { buildRunwayAtlas } from "./buildRunwayAtlas.js";
 import { parseBgFile } from "./parseBg.js";
 import { parsePropModel, propBinPath } from "./parsePropBinaryModel.js";
-import { parseSetupPad3dlist, parseSetupPadlist, parseSetupPropdefs, parsePropModelEntries } from "./parseSetup.js";
+import { parseSetupIntro, parseSetupPad3dlist, parseSetupPadlist, parseSetupPropdefs, parsePropModelEntries } from "./parseSetup.js";
 import { parseStanFile } from "./parseStan.js";
 function normalizePath(p) {
     return p.split(path.sep).join("/");
@@ -56,6 +56,7 @@ const stanTiles = parseStanFile(sourceFiles.stan).sort((a, b) => a.id - b.id);
 const pads = parseSetupPadlist(sourceFiles.setup);
 const boundPads = parseSetupPad3dlist(sourceFiles.setup);
 const propPlacements = parseSetupPropdefs(sourceFiles.setup);
+const intro = parseSetupIntro(sourceFiles.setup);
 const propModelEntries = parsePropModelEntries(sourceFiles.propModelNames);
 // Flat name array for backward-compatible indexing (propModelNames[primaryIndex]).
 const propModelNames = propModelEntries.map((e) => e.name);
@@ -128,6 +129,7 @@ const outputData = {
     portals,
     roomCenters,
     roomTriangles,
+    intro,
     atlas,
     propPlacements: annotatedPlacements,
     propModelNames,

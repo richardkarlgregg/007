@@ -107,6 +107,19 @@
       "height":    "window_recess_height.png",
       "alpha":     "",
       "heightScale": 0
+    },
+    {
+      "name": "snow_metal",
+      "_comment": "Snow metal surface set. Fill in materialIds from poly inspector for runway/ground snow metal polygons.",
+      "materialIds": [1151],
+      "albedo":    "snow_metal_basecolor.png",
+      "normal":    "",
+      "roughness": "",
+      "ao":        "",
+      "metallic":  "",
+      "height":    "",
+      "alpha":     "",
+      "heightScale": 0
     }
   ]
 }

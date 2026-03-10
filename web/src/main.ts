@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { buildBgMesh, buildBgMeshWithAtlas, buildPbrOverrideMeshes, buildRemasterPlaceholderMeshes, buildPadsLayer, buildPortalsLayer, buildPropsLayer, buildRoomLabelsLayer, buildStanMesh, makeFogUniforms } from "./viewer/DebugLayers";
 import type { FogUniforms } from "./viewer/DebugLayers";
 import { loadStageData } from "./viewer/StageLoader";
-import type { AtlasManifest, RoomTriangle } from "./viewer/StageLoader";
+import type { AtlasManifest, PadRecord, RoomTriangle, StageData } from "./viewer/StageLoader";
 import { collectOverriddenIds, loadOverrides } from "./viewer/OverrideLoader";
+import { loadBondIntroAsset } from "./viewer/BondIntroActor";
 
 interface Bounds3 {
   minX: number;
@@ -34,6 +35,31 @@ function computeStageBounds(triangles: RoomTriangle[]): Bounds3 {
   }
 
   return { minX, maxX, minY, maxY, minZ, maxZ };
+}
+
+function fixed16ToFloat(value: number): number {
+  return value / 65536.0;
+}
+
+function selectSpawnPad(stage: StageData): PadRecord | null {
+  const spawnPadIndex = stage.intro?.spawns.find((s) => s.isDemoPlayback === 0)?.pad;
+  if (spawnPadIndex !== undefined) {
+    return stage.pads[spawnPadIndex] ?? null;
+  }
+  return stage.pads[0] ?? null;
+}
+
+function selectStartingWeaponId(stage: StageData): number {
+  return stage.intro?.startWeapons.find((w) => w.isDemoPlayback === 0)?.itemRight ?? 5;
+}
+
+function itemLabel(id: number): string {
+  const names: Record<number, string> = {
+    5: "PP7",
+    8: "KF7 Soviet",
+    26: "D5K Deutsche",
+  };
+  return names[id] ?? `ITEM_${id}`;
 }
 
 async function bootstrap(): Promise<void> {
@@ -156,6 +182,9 @@ async function bootstrap(): Promise<void> {
   camera.lookAt(850, 0, -900);
   let yaw   = camera.rotation.y;
   let pitch = camera.rotation.x;
+  let devFlyEnabled = false;
+  let flyMoveSpeed = 280;
+  let flyLookSensitivity = 0.0012;
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
@@ -174,19 +203,31 @@ async function bootstrap(): Promise<void> {
   function setFlyMode(active: boolean): void {
     flyMode = active;
     if (flyOverlay) flyOverlay.style.display = active ? "none" : "flex";
-    if (flyHint)    flyHint.textContent       = active ? "Esc — exit fly mode" : "";
+    if (flyHint) {
+      if (active) {
+        flyHint.textContent = "Esc — exit fly mode";
+      } else if (devFlyEnabled) {
+        flyHint.textContent = "Click canvas to lock pointer";
+      } else {
+        flyHint.textContent = "";
+      }
+    }
   }
   setFlyMode(false);
 
   document.addEventListener("pointerlockchange", () => {
-    setFlyMode(document.pointerLockElement === renderer.domElement);
+    const locked = document.pointerLockElement === renderer.domElement;
+    if (devFlyEnabled && !locked) {
+      // Esc unlock should also leave detached fly mode and restore Bond view.
+      exitDevFlyMode(true);
+    }
+    setFlyMode(locked && devFlyEnabled);
   });
 
   document.addEventListener("mousemove", (e: MouseEvent) => {
-    if (!flyMode) return;
-    const sensitivity = 0.002;
-    yaw   -= e.movementX * sensitivity;
-    pitch -= e.movementY * sensitivity;
+    if (document.pointerLockElement !== renderer.domElement) return;
+    yaw   -= e.movementX * flyLookSensitivity;
+    pitch -= e.movementY * flyLookSensitivity;
     pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
     camera.rotation.order = "YXZ";
     camera.rotation.y = yaw;
@@ -238,6 +279,10 @@ async function bootstrap(): Promise<void> {
 
   const stageDataPath = `${import.meta.env.BASE_URL}data/stages/runway.json`;
   const stage = await loadStageData(stageDataPath);
+  const stageScale = stage.stageLevelScale ?? 1.0;
+  const spawnPad = selectSpawnPad(stage);
+  const startingWeaponId = selectStartingWeaponId(stage);
+  const startingWeaponName = itemLabel(startingWeaponId);
 
   let atlasPath = "";
   let atlasTextureForProps: THREE.Texture | null = null;
@@ -256,6 +301,75 @@ async function bootstrap(): Promise<void> {
   // true = remaster PBR is shown (when available); can be toggled with R key.
   let pbrEnabled = true;
   const stageBounds = computeStageBounds(stage.roomTriangles);
+
+  const playerStartPosition = spawnPad
+    ? new THREE.Vector3(spawnPad.position.x, spawnPad.position.y, spawnPad.position.z)
+    : new THREE.Vector3(
+        (stageBounds.minX + stageBounds.maxX) * 0.5,
+        stageBounds.minY + 8,
+        (stageBounds.minZ + stageBounds.maxZ) * 0.5
+      );
+  const playerFacing = spawnPad
+    ? new THREE.Vector3(spawnPad.orientation.x, spawnPad.orientation.y, spawnPad.orientation.z)
+    : new THREE.Vector3(0, 0, 1);
+
+  const bondGraphDisabled = new URLSearchParams(window.location.search).get("bondGraph") === "0";
+  const bondActor = await loadBondIntroAsset(
+    `${import.meta.env.BASE_URL}data/actors/bond_intro.json`,
+    stageScale,
+    { forceLegacy: bondGraphDisabled }
+  );
+  bondActor.setWorldPosition(playerStartPosition);
+  bondActor.setFacingFromOrientation(playerFacing);
+  scene.add(bondActor.group);
+
+  const introGun = bondActor.createGunMesh();
+  introGun.position.set(0, 0, 0.5);
+  introGun.rotation.set(-0.08, -Math.PI * 0.5, 0.02);
+  bondActor.weaponAnchor.add(introGun);
+
+  const fpGun = bondActor.createGunMesh();
+  fpGun.position.set(0.18, -0.22, -0.56);
+  fpGun.rotation.set(-0.1, -Math.PI * 0.5, 0.04);
+  // Disabled until true first-person hand model pipeline is implemented.
+  fpGun.visible = false;
+  camera.add(fpGun);
+  scene.add(camera);
+
+  type PlayerCameraMode = "IntroOrbit" | "EnterFirstPerson" | "FirstPerson";
+  let playerCameraMode: PlayerCameraMode = "IntroOrbit";
+  let modeBeforeDevFly: PlayerCameraMode | null = null;
+  let enterFpElapsed = 0;
+  const enterFpDuration = 0.85;
+  const enterStartPos = new THREE.Vector3();
+  const enterTargetPos = new THREE.Vector3();
+  const enterStartQuat = new THREE.Quaternion();
+  const enterTargetQuat = new THREE.Quaternion();
+  const preFlyPos = new THREE.Vector3();
+  const preFlyQuat = new THREE.Quaternion();
+  let preFlyYaw = yaw;
+  let preFlyPitch = pitch;
+
+  // Approximate Bond standing eye level in GE world units.
+  const playerEyeHeight = 52.0 * stageScale;
+  const playerVelocity = new THREE.Vector3();
+  const playerGroundPos = playerStartPosition.clone();
+  playerGroundPos.y = playerStartPosition.y;
+  const introEyeWorld = new THREE.Vector3(playerStartPosition.x, playerStartPosition.y + playerEyeHeight, playerStartPosition.z);
+  const uiStatus = document.createElement("div");
+  uiStatus.style.position = "fixed";
+  uiStatus.style.left = "14px";
+  uiStatus.style.bottom = "10px";
+  uiStatus.style.padding = "6px 10px";
+  uiStatus.style.background = "rgba(4,7,12,0.62)";
+  uiStatus.style.color = "#c6d8ea";
+  uiStatus.style.fontFamily = "monospace";
+  uiStatus.style.fontSize = "12px";
+  uiStatus.style.border = "1px solid rgba(141,178,214,0.32)";
+  uiStatus.style.borderRadius = "4px";
+  uiStatus.style.zIndex = "20";
+  uiStatus.textContent = `start weapon: ${startingWeaponName} | levelscale: ${stageScale.toFixed(6)}`;
+  root.appendChild(uiStatus);
 
   if (stage.atlas) {
     atlasPath = `${import.meta.env.BASE_URL}data/stages/${stage.atlas.atlasImage}`;
@@ -893,6 +1007,146 @@ async function bootstrap(): Promise<void> {
   const forward = new THREE.Vector3();
   const right    = new THREE.Vector3();
   const move     = new THREE.Vector3();
+  const tmpEye = new THREE.Vector3();
+  const tmpLookAt = new THREE.Vector3();
+  const tmpCameraQuat = new THREE.Quaternion();
+  const swirlOffset = (() => {
+    const first = stage.intro?.swirlCams?.[0];
+    if (!first) return new THREE.Vector3(0, 38, -84);
+    return new THREE.Vector3(
+      fixed16ToFloat(first.x),
+      fixed16ToFloat(first.y),
+      fixed16ToFloat(first.z)
+    );
+  })();
+
+  function updateIntroCamera(delta: number): void {
+    const pose = bondActor.tick(delta);
+    bondActor.eyeAnchor.getWorldPosition(introEyeWorld);
+    const eyeWorld = tmpEye.copy(introEyeWorld);
+    eyeWorld.y += THREE.MathUtils.lerp(1.2, 0.0, bondActor.normalizedTime);
+    const t = bondActor.normalizedTime;
+    const orbitYaw = THREE.MathUtils.lerp(-1.95, 0.22, t);
+    const orbitDistance = THREE.MathUtils.lerp(
+      Math.max(95, swirlOffset.length() + 24),
+      14,
+      THREE.MathUtils.smoothstep(t, 0.2, 1.0)
+    );
+    const orbitHeight = THREE.MathUtils.lerp(30 + swirlOffset.y * 0.25, 2.4, t);
+    camera.position.set(
+      eyeWorld.x + Math.sin(orbitYaw) * orbitDistance,
+      eyeWorld.y + orbitHeight,
+      eyeWorld.z + Math.cos(orbitYaw) * orbitDistance
+    );
+    tmpLookAt.copy(eyeWorld);
+    tmpLookAt.y += THREE.MathUtils.lerp(5, 0, t);
+    camera.lookAt(tmpLookAt);
+    yaw = camera.rotation.y;
+    pitch = camera.rotation.x;
+    introGun.visible = true;
+    fpGun.visible = false;
+    fpGun.position.y = -0.24 + 0.16 * pose.weaponRaise;
+
+    if (t >= 0.999) {
+      playerCameraMode = "EnterFirstPerson";
+      enterFpElapsed = 0;
+      enterStartPos.copy(camera.position);
+      enterStartQuat.copy(camera.quaternion);
+      enterTargetPos.copy(eyeWorld);
+      tmpLookAt.copy(eyeWorld).addScaledVector(playerFacing, 32);
+      const look = new THREE.Matrix4().lookAt(eyeWorld, tmpLookAt, new THREE.Vector3(0, 1, 0));
+      enterTargetQuat.setFromRotationMatrix(look).invert();
+      introGun.visible = false;
+      fpGun.visible = false;
+      renderer.domElement.requestPointerLock();
+    }
+  }
+
+  function updateEnterFirstPerson(delta: number): void {
+    enterFpElapsed = Math.min(enterFpDuration, enterFpElapsed + delta);
+    const t = THREE.MathUtils.smoothstep(enterFpElapsed / enterFpDuration, 0, 1);
+    camera.position.lerpVectors(enterStartPos, enterTargetPos, t);
+    tmpCameraQuat.slerpQuaternions(enterStartQuat, enterTargetQuat, t);
+    camera.quaternion.copy(tmpCameraQuat);
+    yaw = camera.rotation.y;
+    pitch = camera.rotation.x;
+    fpGun.position.y = THREE.MathUtils.lerp(-0.08, -0.22, t);
+    if (enterFpElapsed >= enterFpDuration) {
+      playerCameraMode = "FirstPerson";
+      bondActor.group.visible = false;
+      fpGun.position.y = -0.22;
+      fpGun.visible = false;
+      playerGroundPos.copy(enterTargetPos);
+      playerGroundPos.y = playerStartPosition.y;
+      yaw = camera.rotation.y;
+      pitch = camera.rotation.x;
+    }
+  }
+
+  function updateFirstPersonMovement(delta: number): void {
+    const moveSpeed = 182;
+    const accel = 820;
+    const damping = 10;
+    const moveX = (movementKeys.right ? 1 : 0) - (movementKeys.left ? 1 : 0);
+    const moveZ = (movementKeys.forward ? 1 : 0) - (movementKeys.back ? 1 : 0);
+    const wish = new THREE.Vector3();
+    if (moveX !== 0 || moveZ !== 0) {
+      // Three.js camera forward is -Z at yaw=0.
+      forward.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+      right.set(-forward.z, 0, forward.x);
+      wish.addScaledVector(forward, moveZ);
+      wish.addScaledVector(right, moveX);
+      if (wish.lengthSq() > 0) {
+        wish.normalize().multiplyScalar(moveSpeed);
+      }
+    }
+    playerVelocity.x = THREE.MathUtils.damp(playerVelocity.x, wish.x, damping, delta);
+    playerVelocity.z = THREE.MathUtils.damp(playerVelocity.z, wish.z, damping, delta);
+    playerVelocity.x += (wish.x - playerVelocity.x) * Math.min(1.0, accel * delta / moveSpeed);
+    playerVelocity.z += (wish.z - playerVelocity.z) * Math.min(1.0, accel * delta / moveSpeed);
+    playerGroundPos.addScaledVector(playerVelocity, delta);
+    camera.position.set(playerGroundPos.x, playerGroundPos.y + playerEyeHeight, playerGroundPos.z);
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+  }
+
+  function enterDevFlyMode(): void {
+    if (devFlyEnabled) return;
+    devFlyEnabled = true;
+    modeBeforeDevFly = playerCameraMode;
+    preFlyPos.copy(camera.position);
+    preFlyQuat.copy(camera.quaternion);
+    preFlyYaw = yaw;
+    preFlyPitch = pitch;
+    // Reveal Bond + intro weapon while inspecting from detached fly camera.
+    bondActor.group.visible = true;
+    introGun.visible = true;
+    fpGun.visible = false;
+    renderer.domElement.requestPointerLock();
+  }
+
+  function exitDevFlyMode(skipPointerUnlock = false): void {
+    if (!devFlyEnabled) return;
+    devFlyEnabled = false;
+    if (!skipPointerUnlock) {
+      document.exitPointerLock();
+    }
+    camera.position.copy(preFlyPos);
+    camera.quaternion.copy(preFlyQuat);
+    yaw = preFlyYaw;
+    pitch = preFlyPitch;
+    if (modeBeforeDevFly) {
+      playerCameraMode = modeBeforeDevFly;
+    }
+    // Restore gameplay visibility based on resumed mode.
+    if (playerCameraMode === "FirstPerson") {
+      bondActor.group.visible = false;
+      introGun.visible = false;
+      fpGun.visible = false;
+    }
+    modeBeforeDevFly = null;
+  }
 
   function setMovementKey(key: string, down: boolean): boolean {
     const normalized = key.toLowerCase();
@@ -973,6 +1227,8 @@ async function bootstrap(): Promise<void> {
   const lightSnowSizeVar = document.getElementById("light-snow-size-var") as HTMLInputElement | null;
   const lightSnowHazeIntensity = document.getElementById("light-snow-haze-intensity") as HTMLInputElement | null;
   const lightSnowHazeClose = document.getElementById("light-snow-haze-close") as HTMLInputElement | null;
+  const lightFlySpeed = document.getElementById("light-fly-speed") as HTMLInputElement | null;
+  const lightFlySensitivity = document.getElementById("light-fly-sensitivity") as HTMLInputElement | null;
 
   function syncLightingUiFromConfig(): void {
     if (!lightingPanel) return;
@@ -1008,6 +1264,8 @@ async function bootstrap(): Promise<void> {
     if (lightSnowSizeVar) lightSnowSizeVar.value = snowCfg.sizeVariation.toFixed(2);
     if (lightSnowHazeIntensity) lightSnowHazeIntensity.value = snowCfg.hazeIntensity.toFixed(2);
     if (lightSnowHazeClose) lightSnowHazeClose.value = snowCfg.hazeCloseness.toFixed(2);
+    if (lightFlySpeed) lightFlySpeed.value = flyMoveSpeed.toFixed(0);
+    if (lightFlySensitivity) lightFlySensitivity.value = flyLookSensitivity.toFixed(4);
   }
 
   function setupSliderForInput(
@@ -1095,6 +1353,8 @@ async function bootstrap(): Promise<void> {
     snowCfg.sizeVariation = clamp(num(lightSnowSizeVar, snowCfg.sizeVariation), 0.0, 0.95);
     snowCfg.hazeIntensity = clamp(num(lightSnowHazeIntensity, snowCfg.hazeIntensity), 0.0, 2.0);
     snowCfg.hazeCloseness = clamp(num(lightSnowHazeClose, snowCfg.hazeCloseness), 0.0, 2.0);
+    flyMoveSpeed = clamp(num(lightFlySpeed, flyMoveSpeed), 40.0, 1400.0);
+    flyLookSensitivity = clamp(num(lightFlySensitivity, flyLookSensitivity), 0.0001, 0.01);
   }
 
   function applyLightingUi(): void {
@@ -1137,6 +1397,8 @@ async function bootstrap(): Promise<void> {
   setupSliderForInput(lightSnowSizeVar, 0.0, 0.95, 0.01);
   setupSliderForInput(lightSnowHazeIntensity, 0.0, 2.0, 0.01);
   setupSliderForInput(lightSnowHazeClose, 0.0, 2.0, 0.01);
+  setupSliderForInput(lightFlySpeed, 40.0, 1400.0, 5.0);
+  setupSliderForInput(lightFlySensitivity, 0.0001, 0.01, 0.0001);
 
   syncLightingUiFromConfig();
   const uiInputs: Array<HTMLInputElement | HTMLSelectElement | null> = [
@@ -1145,7 +1407,8 @@ async function bootstrap(): Promise<void> {
     lightShadowsEnabled, lightShadowSize, lightShadowRadius, lightShadowNear, lightShadowFar,
     lightShadowBias, lightShadowNormalBias, lightFlareEnabled, lightFlareIntensity, lightShowHelpers,
     lightSnowEnabled, lightSnowIntensity, lightSnowSpeed, lightSnowSize, lightSnowWind,
-    lightSnowGravity, lightSnowWindDir, lightSnowDriftRand, lightSnowSizeVar, lightSnowHazeIntensity, lightSnowHazeClose
+    lightSnowGravity, lightSnowWindDir, lightSnowDriftRand, lightSnowSizeVar, lightSnowHazeIntensity, lightSnowHazeClose,
+    lightFlySpeed, lightFlySensitivity
   ];
   uiInputs.forEach((el) => {
     if (!el) return;
@@ -1232,7 +1495,7 @@ async function bootstrap(): Promise<void> {
     // When not in fly mode, left-click on canvas requests pointer lock (enters fly).
     // The click that triggers pointer lock is consumed here; subsequent clicks
     // while locked are ignored so we don't accidentally fire the inspector.
-    if (!flyMode) {
+    if (document.pointerLockElement !== renderer.domElement) {
       renderer.domElement.requestPointerLock();
       // Still fall through so clicking a polygon also locks AND inspects.
     } else {
@@ -1352,8 +1615,12 @@ async function bootstrap(): Promise<void> {
       if (lightSnowEnabled) lightSnowEnabled.checked = snowCfg.enabled;
       applySnowConfig();
     } else if (event.key === "f" || event.key === "F") {
-      if (flyMode) document.exitPointerLock();
-      else renderer.domElement.requestPointerLock();
+      if (devFlyEnabled) {
+        exitDevFlyMode();
+      } else {
+        enterDevFlyMode();
+      }
+      setFlyMode(devFlyEnabled && document.pointerLockElement === renderer.domElement);
     } else if (event.key === "Escape") {
       if (flyMode) {
         document.exitPointerLock();
@@ -1372,22 +1639,31 @@ async function bootstrap(): Promise<void> {
 
   const animate = (): void => {
     const delta = clock.getDelta();
-    const moveSpeed = 520; // world units per second
     const moveX = (movementKeys.right ? 1 : 0) - (movementKeys.left ? 1 : 0);
     const moveZ = (movementKeys.forward ? 1 : 0) - (movementKeys.back ? 1 : 0);
-    if (moveX !== 0 || moveZ !== 0) {
-      // camera.getWorldDirection gives the exact forward vector regardless of
-      // how the camera was rotated — no orbit target needed.
-      camera.getWorldDirection(forward);
-      right.crossVectors(forward, camera.up).normalize();
-      move.set(0, 0, 0);
-      if (moveZ !== 0) move.addScaledVector(forward, moveZ);
-      if (moveX !== 0) move.addScaledVector(right, moveX);
-      if (move.lengthSq() > 0) {
-        move.normalize().multiplyScalar(moveSpeed * delta);
-        camera.position.add(move);
+
+    if (devFlyEnabled && flyMode) {
+      const moveSpeed = flyMoveSpeed;
+      if (moveX !== 0 || moveZ !== 0) {
+        camera.getWorldDirection(forward);
+        right.crossVectors(forward, camera.up).normalize();
+        move.set(0, 0, 0);
+        if (moveZ !== 0) move.addScaledVector(forward, moveZ);
+        if (moveX !== 0) move.addScaledVector(right, moveX);
+        if (move.lengthSq() > 0) {
+          move.normalize().multiplyScalar(moveSpeed * delta);
+          camera.position.add(move);
+        }
       }
+    } else if (playerCameraMode === "IntroOrbit") {
+      updateIntroCamera(delta);
+    } else if (playerCameraMode === "EnterFirstPerson") {
+      updateEnterFirstPerson(delta);
+    } else {
+      updateFirstPersonMovement(delta);
     }
+    uiStatus.textContent = `mode: ${playerCameraMode} | weapon: ${startingWeaponName}${devFlyEnabled ? " | dev-fly" : ""}`;
+
     updateSnowFrustumVisibility();
     if (snowPoints.visible) {
       snowMat.uniforms.uTime.value += delta;

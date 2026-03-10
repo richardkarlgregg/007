@@ -104,6 +104,11 @@ function cloneVertex(v) {
         r: v.r, g: v.g, b: v.b,
     };
 }
+function vertexPlausibilityScore(v) {
+    // Lower is better. Real GE model-space vertices are typically far smaller
+    // than decode artifacts caused by reading the wrong segment source.
+    return Math.max(Math.abs(v.x), Math.abs(v.y), Math.abs(v.z));
+}
 function readVertex(buf, off) {
     return {
         x: readI16BE(buf, off),
@@ -170,7 +175,7 @@ function decodeTriWordByStride(word, stride) {
  * Decode one Gfx display list that starts at `gfxOffset` within `binary`.
  * Vertices are loaded from segment-4, which points to `vtxBinaryOffset` in `binary`.
  */
-function decodeGfx(binary, gfxOffset, vtxBinaryOffset, baseBinaryOffset) {
+function decodeGfx(binary, gfxOffset, vtxBinaryOffset, baseBinaryOffset, seg3PreferBase, preferTri2B1) {
     const triangles = [];
     const cache = new Array(64).fill(null);
     let materialId = 0;
@@ -247,17 +252,22 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset, baseBinaryOffset) {
             for (let i = 0; i < n; i++) {
                 const idx = baseIdx + i;
                 const candidates = (seg === 0x03)
-                    ? [baseBinaryOffset, vtxBinaryOffset] // seg3 can be BaseAddr; fallback keeps legacy models alive
+                    ? (seg3PreferBase ? [baseBinaryOffset, vtxBinaryOffset] : [vtxBinaryOffset, baseBinaryOffset])
                     : [vtxBinaryOffset];
                 let loaded = null;
+                let bestScore = Number.POSITIVE_INFINITY;
                 for (const srcBase of candidates) {
                     if (srcBase === null)
                         continue;
                     const vOff = srcBase + idx * 16;
                     if (vOff + 15 >= binary.length)
                         continue;
-                    loaded = readVertex(binary, vOff);
-                    break;
+                    const candidateVertex = readVertex(binary, vOff);
+                    const score = vertexPlausibilityScore(candidateVertex);
+                    if (loaded === null || score < bestScore) {
+                        loaded = candidateVertex;
+                        bestScore = score;
+                    }
                 }
                 cache[v0 + i] = loaded;
             }
@@ -283,7 +293,16 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset, baseBinaryOffset) {
             // and cause missing/warped faces if misclassified.
             const validTri2By10 = tri2Bytes.every((v) => v % 10 === 0 && (v / 10) < 64)
                 && tri2By10.length === 2;
-            const tris = validTri2By10 ? tri2By10 : decodeTri4(w0, w1);
+            const tri2By2 = decodeTri2ByStride(w0, w1, 2);
+            const validTri2By2 = tri2Bytes.every((v) => v % 2 === 0 && (v / 2) < 64)
+                && tri2By2.length === 2;
+            let tris;
+            if (preferTri2B1) {
+                tris = validTri2By10 ? tri2By10 : validTri2By2 ? tri2By2 : decodeTri4(w0, w1);
+            }
+            else {
+                tris = validTri2By10 ? tri2By10 : decodeTri4(w0, w1);
+            }
             for (const [i0, i1, i2] of tris) {
                 if (i0 === 0 && i1 === 0 && i2 === 0)
                     continue;
@@ -343,6 +362,16 @@ function decodeGfx(binary, gfxOffset, vtxBinaryOffset, baseBinaryOffset) {
     }
     return triangles;
 }
+function translateTriangle(tri, tx, ty, tz) {
+    if (tx === 0 && ty === 0 && tz === 0)
+        return tri;
+    return {
+        ...tri,
+        a: { ...tri.a, x: tri.a.x + tx, y: tri.a.y + ty, z: tri.a.z + tz },
+        b: { ...tri.b, x: tri.b.x + tx, y: tri.b.y + ty, z: tri.b.z + tz },
+        c: { ...tri.c, x: tri.c.x + tx, y: tri.c.y + ty, z: tri.c.z + tz },
+    };
+}
 function ptrToOffset(ptr, binaryLen) {
     if (!isSegAddr(ptr))
         return null;
@@ -351,28 +380,125 @@ function ptrToOffset(ptr, binaryLen) {
         return null;
     return off;
 }
+function countReachableNodesFromRoot(binary, rootOff) {
+    if (rootOff < 0 || rootOff + 0x18 > binary.length)
+        return 0;
+    const stack = [{ nodeOff: rootOff, allowNext: true }];
+    const seen = new Set();
+    let guard = 0;
+    while (stack.length > 0 && guard < 250000) {
+        guard += 1;
+        const { nodeOff, allowNext } = stack.pop();
+        if (nodeOff < 0 || nodeOff + 0x18 > binary.length)
+            continue;
+        if (seen.has(nodeOff))
+            continue;
+        seen.add(nodeOff);
+        const opcode = readU16BE(binary, nodeOff) & 0xff;
+        const dataPtr = readU32BE(binary, nodeOff + 0x04);
+        const nextPtr = readU32BE(binary, nodeOff + 0x0c);
+        let childPtr = readU32BE(binary, nodeOff + 0x14);
+        const dataOff = ptrToOffset(dataPtr, binary.length);
+        if (dataOff !== null) {
+            if (opcode === 0x08 && dataOff + 0x0c <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x08);
+            }
+            else if (opcode === 0x12 && dataOff + 0x04 <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x00);
+            }
+            else if (opcode === 0x09 && dataOff + 0x20 <= binary.length) {
+                const leftOff = ptrToOffset(readU32BE(binary, dataOff + 0x18), binary.length);
+                const rightOff = ptrToOffset(readU32BE(binary, dataOff + 0x1c), binary.length);
+                if (leftOff !== null)
+                    stack.push({ nodeOff: leftOff, allowNext: true });
+                if (rightOff !== null)
+                    stack.push({ nodeOff: rightOff, allowNext: true });
+            }
+        }
+        if (opcode === 0x17) {
+            // Head placeholder: runtime attaches separate head model data here.
+            // Do not descend into placeholder child branches for static body decode.
+            childPtr = 0;
+        }
+        const nextOff = ptrToOffset(nextPtr, binary.length);
+        const childOff = ptrToOffset(childPtr, binary.length);
+        if (allowNext && nextOff !== null)
+            stack.push({ nodeOff: nextOff, allowNext: true });
+        if (childOff !== null)
+            stack.push({ nodeOff: childOff, allowNext: opcode !== 0x12 });
+    }
+    return seen.size;
+}
+/**
+ * Walk a chr node's Parent pointer chain to reach the true scene-root node.
+ * The binary[0x00] pointer for chr files lands mid-tree (e.g. on a joint);
+ * the real HEADER node (opcode 0x01, null parent) is reached by following
+ * Parent links upward, exactly as modelInitRwData would traverse from the top.
+ */
+function walkToSceneRoot(binary, startOff) {
+    let cur = startOff;
+    const visited = new Set();
+    while (visited.size < 500) {
+        if (cur < 0 || cur + 0x18 > binary.length)
+            break;
+        if (visited.has(cur))
+            break;
+        visited.add(cur);
+        const parentPtr = readU32BE(binary, cur + 0x08);
+        const parentOff = ptrToOffset(parentPtr, binary.length);
+        if (parentOff === null)
+            return cur; // null parent = this is the root
+        cur = parentOff;
+    }
+    return cur;
+}
+function resolveModelRootOffset(binary, allowAlternateHeaderRoots) {
+    if (binary.length < 0x1c)
+        return null;
+    if (allowAlternateHeaderRoots) {
+        // For chr models: binary[0x00] is a pointer that lands mid-tree.
+        // Walk Parent links from there to find the true HEADER root (null parent).
+        const candidateHeaderOffsets = [0x00, 0x04, 0x14, 0x18];
+        let bestRoot = null;
+        let bestScore = -1;
+        for (const hdrOff of candidateHeaderOffsets) {
+            const ptr = readU32BE(binary, hdrOff);
+            const startOff = ptrToOffset(ptr, binary.length);
+            if (startOff === null)
+                continue;
+            const trueRoot = walkToSceneRoot(binary, startOff);
+            const score = countReachableNodesFromRoot(binary, trueRoot);
+            if (score > bestScore) {
+                bestScore = score;
+                bestRoot = trueRoot;
+            }
+        }
+        return bestRoot;
+    }
+    // For non-chr models, use the existing simple approach.
+    const ptr = readU32BE(binary, 0x00);
+    const rootOff = ptrToOffset(ptr, binary.length);
+    return rootOff;
+}
 /**
  * Walk model nodes from ModelFileHeader.RootNode and collect all display-list
  * payload records that carry explicit vertex tables.
  */
-function collectDisplayListRecordsFromModelTree(binary) {
-    if (binary.length < 4)
-        return [];
-    const rootPtr = readU32BE(binary, 0);
-    const rootOff = ptrToOffset(rootPtr, binary.length);
+function collectDisplayListRecordsFromModelTree(binary, allowAlternateHeaderRoots) {
+    const rootOff = resolveModelRootOffset(binary, allowAlternateHeaderRoots);
     if (rootOff === null)
         return [];
     const out = [];
     const stack = [
-        { nodeOff: rootOff, tx: 0, ty: 0, tz: 0 },
+        { nodeOff: rootOff, tx: 0, ty: 0, tz: 0, allowNext: true },
     ];
     let guard = 0;
     while (stack.length > 0 && guard < 100000) {
         guard += 1;
-        const { nodeOff, tx, ty, tz } = stack.pop();
+        const { nodeOff, tx, ty, tz, allowNext } = stack.pop();
         if (nodeOff < 0 || nodeOff + 24 > binary.length)
             continue;
-        const opcode = readU16BE(binary, nodeOff);
+        const opcode = readU16BE(binary, nodeOff) & 0xff;
         const dataPtr = readU32BE(binary, nodeOff + 4);
         const nextPtr = readU32BE(binary, nodeOff + 0x0c);
         let childPtr = readU32BE(binary, nodeOff + 0x14);
@@ -399,10 +525,17 @@ function collectDisplayListRecordsFromModelTree(binary) {
         }
         const nextOff = ptrToOffset(nextPtr, binary.length);
         const childOff = ptrToOffset(childPtr, binary.length);
-        if (nextOff !== null)
-            stack.push({ nodeOff: nextOff, tx, ty, tz });
+        if (opcode === 0x17) {
+            // Head placeholder branch is populated dynamically at runtime.
+            // Skip static traversal into child subtrees to avoid mixed body/head decode.
+            if (allowNext && nextOff !== null)
+                stack.push({ nodeOff: nextOff, tx, ty, tz, allowNext: true });
+            continue;
+        }
+        if (allowNext && nextOff !== null)
+            stack.push({ nodeOff: nextOff, tx, ty, tz, allowNext: true });
         if (childOff !== null)
-            stack.push({ nodeOff: childOff, tx: childTx, ty: childTy, tz: childTz });
+            stack.push({ nodeOff: childOff, tx: childTx, ty: childTy, tz: childTz, allowNext: opcode !== 0x12 });
         // Runtime behavior from modelInitRwData():
         // - BSP nodes can reference left/right child branches in rodata.
         //   Include both so we don't miss sub-meshes that aren't wired through
@@ -413,9 +546,9 @@ function collectDisplayListRecordsFromModelTree(binary) {
             const leftOff = ptrToOffset(leftPtr, binary.length);
             const rightOff = ptrToOffset(rightPtr, binary.length);
             if (leftOff !== null)
-                stack.push({ nodeOff: leftOff, tx, ty, tz });
+                stack.push({ nodeOff: leftOff, tx, ty, tz, allowNext: true });
             if (rightOff !== null)
-                stack.push({ nodeOff: rightOff, tx, ty, tz });
+                stack.push({ nodeOff: rightOff, tx, ty, tz, allowNext: true });
         }
         if (dataOff === null)
             continue;
@@ -503,43 +636,69 @@ function collectDisplayListRecordsFromModelTree(binary) {
     }
     return out;
 }
-function parseModelBoundingBox(binary) {
-    if (binary.length < 4)
+function parseModelBoundingBox(binary, allowAlternateHeaderRoots) {
+    const rootOff = resolveModelRootOffset(binary, allowAlternateHeaderRoots);
+    if (rootOff === null)
         return null;
-    const rootPtr = readU32BE(binary, 0);
-    if (!isSegAddr(rootPtr))
-        return null;
-    const rootOff = rootPtr - SEGMENT_BASE;
-    if (rootOff < 0 || rootOff + 0x18 > binary.length)
-        return null;
-    const childPtr = readU32BE(binary, rootOff + 0x14);
-    if (!isSegAddr(childPtr))
-        return null;
-    const childOff = childPtr - SEGMENT_BASE;
-    if (childOff < 0 || childOff + 0x18 > binary.length)
-        return null;
-    const opcode = readU16BE(binary, childOff);
-    // ModelRoData_BoundingBoxRecord = opcode 10 (0x0A)
-    if (opcode !== 0x000a)
-        return null;
-    const dataPtr = readU32BE(binary, childOff + 0x04);
-    if (!isSegAddr(dataPtr))
-        return null;
-    const dataOff = dataPtr - SEGMENT_BASE;
-    if (dataOff < 0 || dataOff + 0x1c > binary.length)
-        return null;
-    const xmin = readF32BE(binary, dataOff + 0x04);
-    const xmax = readF32BE(binary, dataOff + 0x08);
-    const ymin = readF32BE(binary, dataOff + 0x0c);
-    const ymax = readF32BE(binary, dataOff + 0x10);
-    const zmin = readF32BE(binary, dataOff + 0x14);
-    const zmax = readF32BE(binary, dataOff + 0x18);
-    if (![xmin, xmax, ymin, ymax, zmin, zmax].every((v) => Number.isFinite(v)))
-        return null;
-    return {
-        min: { x: xmin, y: ymin, z: zmin },
-        max: { x: xmax, y: ymax, z: zmax },
-    };
+    const stack = [{ nodeOff: rootOff, allowNext: true }];
+    const seen = new Set();
+    let guard = 0;
+    while (stack.length > 0 && guard < 200000) {
+        guard += 1;
+        const { nodeOff, allowNext } = stack.pop();
+        if (nodeOff < 0 || nodeOff + 0x18 > binary.length)
+            continue;
+        if (seen.has(nodeOff))
+            continue;
+        seen.add(nodeOff);
+        const opcode = readU16BE(binary, nodeOff) & 0xff;
+        const dataPtr = readU32BE(binary, nodeOff + 0x04);
+        const nextPtr = readU32BE(binary, nodeOff + 0x0c);
+        let childPtr = readU32BE(binary, nodeOff + 0x14);
+        const dataOff = ptrToOffset(dataPtr, binary.length);
+        if (opcode === 0x0a && dataOff !== null && dataOff + 0x1c <= binary.length) {
+            const xmin = readF32BE(binary, dataOff + 0x04);
+            const xmax = readF32BE(binary, dataOff + 0x08);
+            const ymin = readF32BE(binary, dataOff + 0x0c);
+            const ymax = readF32BE(binary, dataOff + 0x10);
+            const zmin = readF32BE(binary, dataOff + 0x14);
+            const zmax = readF32BE(binary, dataOff + 0x18);
+            if ([xmin, xmax, ymin, ymax, zmin, zmax].every((v) => Number.isFinite(v))) {
+                return {
+                    min: { x: xmin, y: ymin, z: zmin },
+                    max: { x: xmax, y: ymax, z: zmax },
+                };
+            }
+        }
+        if (dataOff !== null) {
+            if (opcode === 0x08 && dataOff + 0x0c <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x08);
+            }
+            else if (opcode === 0x12 && dataOff + 0x04 <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x00);
+            }
+            else if (opcode === 0x09 && dataOff + 0x20 <= binary.length) {
+                const leftPtr = readU32BE(binary, dataOff + 0x18);
+                const rightPtr = readU32BE(binary, dataOff + 0x1c);
+                const leftOff = ptrToOffset(leftPtr, binary.length);
+                const rightOff = ptrToOffset(rightPtr, binary.length);
+                if (leftOff !== null)
+                    stack.push({ nodeOff: leftOff, allowNext: true });
+                if (rightOff !== null)
+                    stack.push({ nodeOff: rightOff, allowNext: true });
+            }
+        }
+        if (opcode === 0x17) {
+            childPtr = 0;
+        }
+        const nextOff = ptrToOffset(nextPtr, binary.length);
+        const childOff = ptrToOffset(childPtr, binary.length);
+        if (allowNext && nextOff !== null)
+            stack.push({ nodeOff: nextOff, allowNext: true });
+        if (childOff !== null)
+            stack.push({ nodeOff: childOff, allowNext: opcode !== 0x12 });
+    }
+    return null;
 }
 /**
  * Scan the binary for ModelRoData_DisplayList_CollisionRecord structures.
@@ -670,6 +829,71 @@ function scanDisplayListRecords(binary) {
     }
     return records;
 }
+function computeTriangleBounds(triangles) {
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+    for (const tri of triangles) {
+        for (const v of [tri.a, tri.b, tri.c]) {
+            if (v.x < minX)
+                minX = v.x;
+            if (v.y < minY)
+                minY = v.y;
+            if (v.z < minZ)
+                minZ = v.z;
+            if (v.x > maxX)
+                maxX = v.x;
+            if (v.y > maxY)
+                maxY = v.y;
+            if (v.z > maxZ)
+                maxZ = v.z;
+        }
+    }
+    return {
+        min: { x: minX, y: minY, z: minZ },
+        max: { x: maxX, y: maxY, z: maxZ },
+    };
+}
+function filterChrTrianglesBySourceBounds(triangles, sourceBounds) {
+    if (!sourceBounds || triangles.length === 0)
+        return triangles;
+    const cx = (sourceBounds.min.x + sourceBounds.max.x) * 0.5;
+    const cy = (sourceBounds.min.y + sourceBounds.max.y) * 0.5;
+    const cz = (sourceBounds.min.z + sourceBounds.max.z) * 0.5;
+    const ex = (sourceBounds.max.x - sourceBounds.min.x) * 0.5;
+    const ey = (sourceBounds.max.y - sourceBounds.min.y) * 0.5;
+    const ez = (sourceBounds.max.z - sourceBounds.min.z) * 0.5;
+    const margin = 10.0;
+    let filtered = triangles.filter((tri) => {
+        const within = (x, y, z) => Math.abs(x - cx) <= ex * margin
+            && Math.abs(y - cy) <= ey * margin
+            && Math.abs(z - cz) <= ez * margin;
+        return within(tri.a.x, tri.a.y, tri.a.z)
+            && within(tri.b.x, tri.b.y, tri.b.z)
+            && within(tri.c.x, tri.c.y, tri.c.z);
+    });
+    if (filtered.length === 0)
+        filtered = triangles;
+    const mags = [];
+    for (const tri of filtered) {
+        for (const v of [tri.a, tri.b, tri.c]) {
+            mags.push(Math.max(Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)));
+        }
+    }
+    if (mags.length === 0)
+        return filtered;
+    mags.sort((a, b) => a - b);
+    const p = Math.max(0, Math.min(mags.length - 1, Math.floor(mags.length * 0.99)));
+    const spikeThreshold = mags[p] * 1.15;
+    const deSpiked = filtered.filter((tri) => {
+        const ok = (v) => Math.max(Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)) <= spikeThreshold;
+        return ok(tri.a) && ok(tri.b) && ok(tri.c);
+    });
+    return deSpiked.length > 0 ? deSpiked : filtered;
+}
 // ─── Main export ─────────────────────────────────────────────────────────────
 /**
  * Parse a prop model binary file extracted from the GoldenEye ROM.
@@ -681,7 +905,9 @@ export function parsePropModel(binPath) {
     const binary = loadPropBinary(binPath);
     if (!binary)
         return null;
-    const treeRecords = collectDisplayListRecordsFromModelTree(binary);
+    const isChrModel = /[\\/]+chr[\\/]+/i.test(binPath);
+    const sourceBounds = parseModelBoundingBox(binary, isChrModel) ?? undefined;
+    const treeRecords = collectDisplayListRecordsFromModelTree(binary, isChrModel);
     const dlRecords = [];
     const seenKeys = new Set();
     const seenPrimary = new Set();
@@ -710,41 +936,26 @@ export function parsePropModel(binPath) {
     }
     if (dlRecords.length === 0)
         return null;
-    const allTriangles = [];
+    let allTriangles = [];
     const materialIdSet = new Set();
+    // Segment-3 vertex loads in chr binaries can point at either BaseAddr or
+    // the main Vertices table depending on record. Prefer Vertices by default;
+    // BaseAddr-first decoding produces large outlier spike meshes for Bond body.
+    const seg3PreferBase = false;
+    const preferTri2B1 = /[\\/]+chr[\\/]+/i.test(binPath);
     for (const rec of dlRecords) {
-        const priTris = decodeGfx(binary, rec.primaryGfxOffset, rec.vtxBinaryOffset, rec.baseBinaryOffset);
+        const priTris = decodeGfx(binary, rec.primaryGfxOffset, rec.vtxBinaryOffset, rec.baseBinaryOffset, seg3PreferBase, preferTri2B1);
         for (const t of priTris) {
-            if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0016 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
-                t.a.x += rec.tx;
-                t.a.y += rec.ty;
-                t.a.z += rec.tz;
-                t.b.x += rec.tx;
-                t.b.y += rec.ty;
-                t.b.z += rec.tz;
-                t.c.x += rec.tx;
-                t.c.y += rec.ty;
-                t.c.z += rec.tz;
-            }
-            allTriangles.push(t);
+            // Apply static group-origin translation accumulated from the model tree.
+            // Dynamic joint animation is still handled at runtime.
+            allTriangles.push(translateTriangle(t, rec.tx, rec.ty, rec.tz));
             if (t.materialId > 0)
                 materialIdSet.add(t.materialId);
         }
         if (rec.secondaryGfxOffset !== null) {
-            const secTris = decodeGfx(binary, rec.secondaryGfxOffset, rec.vtxBinaryOffset, rec.baseBinaryOffset);
+            const secTris = decodeGfx(binary, rec.secondaryGfxOffset, rec.vtxBinaryOffset, rec.baseBinaryOffset, seg3PreferBase, preferTri2B1);
             for (const t of secTris) {
-                if ((rec.sourceOpcode === 0x0004 || rec.sourceOpcode === 0x0016 || rec.sourceOpcode === 0x0018) && (rec.tx !== 0 || rec.ty !== 0 || rec.tz !== 0)) {
-                    t.a.x += rec.tx;
-                    t.a.y += rec.ty;
-                    t.a.z += rec.tz;
-                    t.b.x += rec.tx;
-                    t.b.y += rec.ty;
-                    t.b.z += rec.tz;
-                    t.c.x += rec.tx;
-                    t.c.y += rec.ty;
-                    t.c.z += rec.tz;
-                }
-                allTriangles.push(t);
+                allTriangles.push(translateTriangle(t, rec.tx, rec.ty, rec.tz));
                 if (t.materialId > 0)
                     materialIdSet.add(t.materialId);
             }
@@ -752,36 +963,253 @@ export function parsePropModel(binPath) {
     }
     if (allTriangles.length === 0)
         return null;
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let minZ = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    let maxZ = Number.NEGATIVE_INFINITY;
-    for (const tri of allTriangles) {
-        for (const v of [tri.a, tri.b, tri.c]) {
-            if (v.x < minX)
-                minX = v.x;
-            if (v.y < minY)
-                minY = v.y;
-            if (v.z < minZ)
-                minZ = v.z;
-            if (v.x > maxX)
-                maxX = v.x;
-            if (v.y > maxY)
-                maxY = v.y;
-            if (v.z > maxZ)
-                maxZ = v.z;
-        }
+    if (isChrModel && sourceBounds) {
+        allTriangles = filterChrTrianglesBySourceBounds(allTriangles, sourceBounds);
     }
-    const sourceBounds = parseModelBoundingBox(binary) ?? undefined;
+    const bounds = computeTriangleBounds(allTriangles);
     return {
         triangles: allTriangles,
         materialIds: [...materialIdSet].sort((a, b) => a - b),
-        bounds: {
-            min: { x: minX, y: minY, z: minZ },
-            max: { x: maxX, y: maxY, z: maxZ },
-        },
+        bounds,
+        sourceBounds,
+    };
+}
+export function parseModelGraph(binPath) {
+    if (!existsSync(binPath))
+        return null;
+    const binary = loadPropBinary(binPath);
+    if (!binary)
+        return null;
+    const isChrModel = /[\\/]+chr[\\/]+/i.test(binPath);
+    const sourceBounds = parseModelBoundingBox(binary, isChrModel) ?? undefined;
+    const rootOff = resolveModelRootOffset(binary, isChrModel);
+    if (rootOff === null) {
+        const fallback = parsePropModel(binPath);
+        if (!fallback)
+            return null;
+        return {
+            rootNodeId: 0,
+            nodes: [{ id: 0, opcode: 0x18, parentId: null, nextId: null, childId: null }],
+            switchTable: [],
+            headPlaceholderNodeId: null,
+            chunks: [{
+                    nodeId: 0,
+                    triangles: fallback.triangles,
+                    materialIds: fallback.materialIds,
+                    bounds: fallback.bounds,
+                }],
+            sourceBounds: fallback.sourceBounds,
+        };
+    }
+    // -------------------------------------------------------------------------
+    // Phase 1: Collect every reachable node offset using a DFS that respects
+    // LOD/SWITCH child-pointer overrides (reads from rodata) and follows both
+    // child and next-sibling chains.  Uses a visited set to handle any cycles.
+    // -------------------------------------------------------------------------
+    const reachableOffsets = [];
+    const visitedOffsets = new Set();
+    const dfsStack = [rootOff];
+    let guard = 0;
+    while (dfsStack.length > 0 && guard < 400000) {
+        guard += 1;
+        const off = dfsStack.pop();
+        if (off < 0 || off + 0x18 > binary.length)
+            continue;
+        if (visitedOffsets.has(off))
+            continue;
+        visitedOffsets.add(off);
+        reachableOffsets.push(off);
+        const opcode = readU16BE(binary, off) & 0xff;
+        const dataPtr = readU32BE(binary, off + 0x04);
+        const nextPtr = readU32BE(binary, off + 0x0c);
+        let childPtr = readU32BE(binary, off + 0x14);
+        const dataOff = ptrToOffset(dataPtr, binary.length);
+        // Override childPtr for LOD and SWITCH nodes — the effective child pointer
+        // comes from their rodata (Affects / Controls), not the binary node field,
+        // since modelCalculateRwDataIndexes patches node->Child at runtime.
+        if (dataOff !== null) {
+            if (opcode === 0x08 && dataOff + 0x0c <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x08); // LOD.Affects
+            }
+            else if (opcode === 0x12 && dataOff + 0x04 <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x00); // SWITCH.Controls
+            }
+            else if (opcode === 0x09 && dataOff + 0x20 <= binary.length) {
+                // BSP: push both left/right children
+                const leftPtr = readU32BE(binary, dataOff + 0x18);
+                const rightPtr = readU32BE(binary, dataOff + 0x1c);
+                const leftOff = ptrToOffset(leftPtr, binary.length);
+                const rightOff = ptrToOffset(rightPtr, binary.length);
+                if (leftOff !== null)
+                    dfsStack.push(leftOff);
+                if (rightOff !== null)
+                    dfsStack.push(rightOff);
+            }
+        }
+        // HEAD placeholder: do NOT descend into child (head model attached at runtime)
+        const effectiveChildPtr = opcode === 0x17 ? null : childPtr;
+        const nextOff = ptrToOffset(nextPtr, binary.length);
+        const childOff = ptrToOffset(effectiveChildPtr ?? 0, binary.length);
+        if (nextOff !== null)
+            dfsStack.push(nextOff);
+        if (childOff !== null)
+            dfsStack.push(childOff);
+    }
+    // -------------------------------------------------------------------------
+    // Phase 2: Assign sequential IDs and build node definitions.
+    // Use the BINARY's Parent/Next pointers to determine relationships —
+    // not traversal order.  Each GROUP's Origin is its LOCAL rest-position
+    // (parent-space), exactly as process_02_position uses it to compute
+    // render_pos[MatrixID0] = parent_matrix * local_matrix(origin).
+    // -------------------------------------------------------------------------
+    const nodeIdByOff = new Map();
+    for (let i = 0; i < reachableOffsets.length; i += 1) {
+        nodeIdByOff.set(reachableOffsets[i], i);
+    }
+    const resolveId = (ptr) => {
+        const off = ptrToOffset(ptr, binary.length);
+        if (off === null)
+            return null;
+        return nodeIdByOff.get(off) ?? null;
+    };
+    const nodes = [];
+    const chunks = [];
+    for (const nodeOff of reachableOffsets) {
+        const id = nodeIdByOff.get(nodeOff);
+        const opcode = readU16BE(binary, nodeOff) & 0xff;
+        const dataPtr = readU32BE(binary, nodeOff + 0x04);
+        const parentPtr = readU32BE(binary, nodeOff + 0x08);
+        const nextPtr = readU32BE(binary, nodeOff + 0x0c);
+        let childPtr = readU32BE(binary, nodeOff + 0x14);
+        const dataOff = ptrToOffset(dataPtr, binary.length);
+        // Use binary Parent pointer for authoritative parentId
+        const parentId = resolveId(parentPtr);
+        const nextId = resolveId(nextPtr);
+        let origin;
+        let controlsNodeId = null;
+        let affectsNodeId = null;
+        let leftNodeId = null;
+        let rightNodeId = null;
+        if (dataOff !== null) {
+            if (opcode === 0x02 || opcode === 0x15) {
+                // GROUP / GROUPSIMPLE: Origin is at data[0x00..0x0B] (3×f32 local pivot)
+                if (dataOff + 0x0c <= binary.length) {
+                    origin = {
+                        x: readF32BE(binary, dataOff + 0x00),
+                        y: readF32BE(binary, dataOff + 0x04),
+                        z: readF32BE(binary, dataOff + 0x08),
+                    };
+                }
+            }
+            else if (opcode === 0x08 && dataOff + 0x0c <= binary.length) {
+                // LOD: effective child comes from rodata->Affects
+                const affectsPtr = readU32BE(binary, dataOff + 0x08);
+                childPtr = affectsPtr;
+                affectsNodeId = resolveId(affectsPtr);
+            }
+            else if (opcode === 0x12 && dataOff + 0x04 <= binary.length) {
+                // SWITCH: effective child comes from rodata->Controls
+                const controlsPtr = readU32BE(binary, dataOff + 0x00);
+                childPtr = controlsPtr;
+                controlsNodeId = resolveId(controlsPtr);
+            }
+            else if (opcode === 0x09 && dataOff + 0x20 <= binary.length) {
+                leftNodeId = resolveId(readU32BE(binary, dataOff + 0x18));
+                rightNodeId = resolveId(readU32BE(binary, dataOff + 0x1c));
+            }
+        }
+        // HEAD placeholder: child is null at rest (attached at runtime by modelAttachHead)
+        const childId = opcode === 0x17 ? null : resolveId(childPtr);
+        nodes.push({
+            id,
+            opcode,
+            parentId,
+            nextId,
+            childId,
+            origin,
+            controlsNodeId,
+            affectsNodeId,
+            leftNodeId: leftNodeId ?? undefined,
+            rightNodeId: rightNodeId ?? undefined,
+        });
+        // Collect geometry from DL / DLPRIMARY / DLCOLLISION nodes
+        const pushChunk = (trianglesRaw) => {
+            let triangles = trianglesRaw;
+            if (isChrModel && sourceBounds) {
+                triangles = filterChrTrianglesBySourceBounds(triangles, sourceBounds);
+            }
+            if (triangles.length === 0)
+                return;
+            const materialSet = new Set();
+            for (const t of triangles)
+                if (t.materialId > 0)
+                    materialSet.add(t.materialId);
+            chunks.push({
+                nodeId: id,
+                triangles,
+                materialIds: [...materialSet].sort((a, b) => a - b),
+                bounds: computeTriangleBounds(triangles),
+            });
+        };
+        if (dataOff !== null) {
+            if (opcode === 0x04 && dataOff + 0x14 <= binary.length) {
+                const priOff = ptrToOffset(readU32BE(binary, dataOff + 0x00), binary.length);
+                const secPtr = readU32BE(binary, dataOff + 0x04);
+                const secOff = secPtr === 0 ? null : ptrToOffset(secPtr, binary.length);
+                const baseOff = ptrToOffset(readU32BE(binary, dataOff + 0x08), binary.length);
+                const vtxOff = ptrToOffset(readU32BE(binary, dataOff + 0x0c), binary.length);
+                const numVtx = readU16BE(binary, dataOff + 0x10);
+                if (priOff !== null && vtxOff !== null && numVtx >= 1 && numVtx <= MAX_MODEL_VERTICES) {
+                    pushChunk(decodeGfx(binary, priOff, vtxOff, baseOff, false, isChrModel));
+                    if (secOff !== null)
+                        pushChunk(decodeGfx(binary, secOff, vtxOff, baseOff, false, isChrModel));
+                }
+            }
+            else if (opcode === 0x16 && dataOff + 0x10 <= binary.length) {
+                const numVtx = readU32BE(binary, dataOff + 0x00);
+                const vtxOff = ptrToOffset(readU32BE(binary, dataOff + 0x04), binary.length);
+                const priOff = ptrToOffset(readU32BE(binary, dataOff + 0x08), binary.length);
+                if (priOff !== null && vtxOff !== null && numVtx >= 1 && numVtx <= MAX_MODEL_VERTICES) {
+                    pushChunk(decodeGfx(binary, priOff, vtxOff, null, false, isChrModel));
+                }
+            }
+            else if (opcode === 0x18 && dataOff + 0x20 <= binary.length) {
+                const priOff = ptrToOffset(readU32BE(binary, dataOff + 0x00), binary.length);
+                const secPtr = readU32BE(binary, dataOff + 0x04);
+                const secOff = secPtr === 0 ? null : ptrToOffset(secPtr, binary.length);
+                const vtxOff = ptrToOffset(readU32BE(binary, dataOff + 0x08), binary.length);
+                const numVtx = readU16BE(binary, dataOff + 0x0c);
+                const baseOff = ptrToOffset(readU32BE(binary, dataOff + 0x1c), binary.length);
+                if (priOff !== null && vtxOff !== null && numVtx >= 1 && numVtx <= MAX_MODEL_VERTICES) {
+                    pushChunk(decodeGfx(binary, priOff, vtxOff, baseOff, false, isChrModel));
+                    if (secOff !== null)
+                        pushChunk(decodeGfx(binary, secOff, vtxOff, baseOff, false, isChrModel));
+                }
+            }
+        }
+    }
+    // -------------------------------------------------------------------------
+    // Switch table: the ModelFileHeader.Switches array lives in ROM code (not in
+    // the chr binary), so we cannot read it from binary[0x00]+0x08.  Instead,
+    // scan the collected nodes for SWITCH nodes (opcode 0x12) and emit them in
+    // discovery order.  The runtime uses controlsNodeId directly, not the index.
+    // -------------------------------------------------------------------------
+    const switchTable = [];
+    for (const n of nodes) {
+        if (n.opcode === 0x12 && n.controlsNodeId !== null && n.controlsNodeId !== undefined) {
+            switchTable.push({ index: switchTable.length, nodeId: n.id });
+        }
+    }
+    const headPlaceholderNode = nodes.find((n) => n.opcode === 0x17) ?? null;
+    const rootNodeId = nodeIdByOff.get(rootOff);
+    if (rootNodeId === undefined)
+        return null;
+    return {
+        rootNodeId,
+        nodes,
+        switchTable,
+        headPlaceholderNodeId: headPlaceholderNode ? headPlaceholderNode.id : null,
+        chunks,
         sourceBounds,
     };
 }
@@ -791,4 +1219,161 @@ export function parsePropModel(binPath) {
  */
 export function propBinPath(repoRoot, modelName) {
     return `${repoRoot}/assets/obseg/prop/P${modelName}Z.bin`;
+}
+export function parseModelJoints(filePath) {
+    if (!existsSync(filePath))
+        return [];
+    const binary = loadPropBinary(filePath);
+    if (!binary || binary.length < 8)
+        return [];
+    const allowAlternateHeaderRoots = /[\\/]+chr[\\/]+/i.test(filePath);
+    const rootOff = resolveModelRootOffset(binary, allowAlternateHeaderRoots);
+    if (rootOff === null)
+        return [];
+    const joints = [];
+    const stack = [{ nodeOff: rootOff, parentJoint: -1, allowNext: true }];
+    const seen = new Set();
+    let guard = 0;
+    while (stack.length > 0 && guard < 200000) {
+        guard += 1;
+        const { nodeOff, parentJoint, allowNext } = stack.pop();
+        if (nodeOff < 0 || nodeOff + 0x18 > binary.length)
+            continue;
+        if (seen.has(nodeOff))
+            continue;
+        seen.add(nodeOff);
+        const opcode = readU16BE(binary, nodeOff) & 0xff;
+        const dataPtr = readU32BE(binary, nodeOff + 0x04);
+        const nextPtr = readU32BE(binary, nodeOff + 0x0c);
+        let childPtr = readU32BE(binary, nodeOff + 0x14);
+        const dataOff = ptrToOffset(dataPtr, binary.length);
+        let currentParent = parentJoint;
+        if ((opcode === 0x0002 || opcode === 0x0015) && dataOff !== null && dataOff + 0x14 <= binary.length) {
+            const idx = joints.length;
+            joints.push({
+                index: idx,
+                parentIndex: parentJoint,
+                opcode,
+                jointId: opcode === 0x0002 ? readU16BE(binary, dataOff + 0x0c) : -1,
+                origin: {
+                    x: readF32BE(binary, dataOff + 0),
+                    y: readF32BE(binary, dataOff + 4),
+                    z: readF32BE(binary, dataOff + 8),
+                },
+            });
+            currentParent = idx;
+        }
+        if (dataOff !== null) {
+            if (opcode === 0x0008 && dataOff + 0x0c <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x08);
+            }
+            else if (opcode === 0x0012 && dataOff + 0x04 <= binary.length) {
+                childPtr = readU32BE(binary, dataOff + 0x00);
+            }
+            else if (opcode === 0x0009 && dataOff + 0x20 <= binary.length) {
+                const leftPtr = readU32BE(binary, dataOff + 0x18);
+                const rightPtr = readU32BE(binary, dataOff + 0x1c);
+                const leftOff = ptrToOffset(leftPtr, binary.length);
+                const rightOff = ptrToOffset(rightPtr, binary.length);
+                if (leftOff !== null)
+                    stack.push({ nodeOff: leftOff, parentJoint: currentParent, allowNext: true });
+                if (rightOff !== null)
+                    stack.push({ nodeOff: rightOff, parentJoint: currentParent, allowNext: true });
+            }
+        }
+        if (opcode === 0x17) {
+            childPtr = 0;
+        }
+        const nextOff = ptrToOffset(nextPtr, binary.length);
+        const childOff = ptrToOffset(childPtr, binary.length);
+        if (allowNext && nextOff !== null)
+            stack.push({ nodeOff: nextOff, parentJoint, allowNext: true });
+        if (childOff !== null)
+            stack.push({ nodeOff: childOff, parentJoint: currentParent, allowNext: opcode !== 0x12 });
+    }
+    return joints;
+}
+export function parseModelSwitchAnchors(filePath) {
+    if (!existsSync(filePath))
+        return [];
+    const binary = loadPropBinary(filePath);
+    if (!binary || binary.length < 0x10)
+        return [];
+    // Many chr binaries begin with a pointer to the actual ModelFileHeader.
+    // Resolve switches from header->Switches when possible; fall back to legacy
+    // direct offset parsing for non-chr/legacy layouts.
+    let switchesOff = null;
+    let headerNumSwitches = null;
+    const headerPtr = readU32BE(binary, 0x00);
+    const headerOff = ptrToOffset(headerPtr, binary.length);
+    if (headerOff !== null && headerOff + 0x10 <= binary.length) {
+        const swPtr = readU32BE(binary, headerOff + 0x08);
+        const swOff = ptrToOffset(swPtr, binary.length);
+        if (swOff !== null) {
+            switchesOff = swOff;
+            headerNumSwitches = readU16BE(binary, headerOff + 0x0c);
+        }
+    }
+    if (switchesOff === null) {
+        const switchesPtr = readU32BE(binary, 0x08);
+        switchesOff = ptrToOffset(switchesPtr, binary.length);
+    }
+    if (switchesOff === null)
+        return [];
+    const anchors = [];
+    // Prefer explicit header count when sane; otherwise scan with invalid-streak
+    // fallback for legacy binaries where count is unreliable.
+    const maxScan = (headerNumSwitches !== null && headerNumSwitches > 0 && headerNumSwitches <= 1024)
+        ? headerNumSwitches
+        : 512;
+    let invalidStreak = 0;
+    for (let i = 0; i < maxScan; i += 1) {
+        const ptrOff = switchesOff + i * 4;
+        if (ptrOff + 4 > binary.length)
+            break;
+        const nodePtr = readU32BE(binary, ptrOff);
+        const nodeOff = ptrToOffset(nodePtr, binary.length);
+        if (nodeOff === null || nodeOff + 0x18 > binary.length) {
+            invalidStreak += 1;
+            if (invalidStreak >= 16 && i > 24)
+                break;
+            continue;
+        }
+        const nodeOpcode = readU16BE(binary, nodeOff) & 0xff;
+        if (nodeOpcode > 0x0018) {
+            invalidStreak += 1;
+            if (invalidStreak >= 16 && i > 24)
+                break;
+            continue;
+        }
+        invalidStreak = 0;
+        const accum = { x: 0, y: 0, z: 0 };
+        const seen = new Set();
+        let walkOff = nodeOff;
+        let guard = 0;
+        while (walkOff !== null && guard < 512) {
+            guard += 1;
+            if (seen.has(walkOff))
+                break;
+            seen.add(walkOff);
+            if (walkOff + 0x18 > binary.length)
+                break;
+            const op = readU16BE(binary, walkOff) & 0xff;
+            const dataPtr = readU32BE(binary, walkOff + 0x04);
+            const dataOff = ptrToOffset(dataPtr, binary.length);
+            if ((op === 0x0002 || op === 0x0015) && dataOff !== null && dataOff + 0x0c <= binary.length) {
+                accum.x += readF32BE(binary, dataOff + 0);
+                accum.y += readF32BE(binary, dataOff + 4);
+                accum.z += readF32BE(binary, dataOff + 8);
+            }
+            const parentPtr = readU32BE(binary, walkOff + 0x08);
+            walkOff = ptrToOffset(parentPtr, binary.length);
+        }
+        anchors.push({
+            index: i,
+            nodeOpcode,
+            accumulatedOrigin: accum,
+        });
+    }
+    return anchors;
 }

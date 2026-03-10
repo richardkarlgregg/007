@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "export:runway": "npm run build && node dist/exportRunway.js"
+    "export:runway": "npm run build && node dist/exportRunway.js && node dist/exportBondIntro.js"
   },
   "devDependencies": {
     "@types/node": "^24.3.1",

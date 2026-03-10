@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { buildRunwayAtlas, type AtlasManifest } from "./buildRunwayAtlas.js";
 import { parseBgFile } from "./parseBg.js";
 import { parsePropModel, propBinPath, type PropModelGeometry } from "./parsePropBinaryModel.js";
-import { parseSetupPad3dlist, parseSetupPadlist, parseSetupPropdefs, parsePropModelEntries } from "./parseSetup.js";
+import { parseSetupIntro, parseSetupPad3dlist, parseSetupPadlist, parseSetupPropdefs, parsePropModelEntries, type SetupIntroData } from "./parseSetup.js";
 import { parseStanFile } from "./parseStan.js";
 
 interface StageOutput {
@@ -22,6 +22,7 @@ interface StageOutput {
   portals: ReturnType<typeof parseBgFile>["portals"];
   roomCenters: ReturnType<typeof parseBgFile>["roomCenters"];
   roomTriangles: ReturnType<typeof parseBgFile>["roomTriangles"];
+  intro: SetupIntroData;
   atlas: AtlasManifest;
   propPlacements: ReturnType<typeof parseSetupPropdefs>;
   /** Flat name array (index = PitemZ_entries index) for backward-compat lookups. */
@@ -89,6 +90,7 @@ const stanTiles = parseStanFile(sourceFiles.stan).sort((a, b) => a.id - b.id);
 const pads = parseSetupPadlist(sourceFiles.setup);
 const boundPads = parseSetupPad3dlist(sourceFiles.setup);
 const propPlacements = parseSetupPropdefs(sourceFiles.setup);
+const intro = parseSetupIntro(sourceFiles.setup);
 const propModelEntries = parsePropModelEntries(sourceFiles.propModelNames);
 // Flat name array for backward-compatible indexing (propModelNames[primaryIndex]).
 const propModelNames = propModelEntries.map((e) => e.name);
@@ -163,6 +165,7 @@ const outputData: StageOutput = {
   portals,
   roomCenters,
   roomTriangles,
+  intro,
   atlas,
   propPlacements: annotatedPlacements,
   propModelNames,
