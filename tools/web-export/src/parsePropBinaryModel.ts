@@ -573,20 +573,81 @@ function resolveModelRootOffset(binary: Uint8Array, allowAlternateHeaderRoots: b
   if (binary.length < 0x1c) return null;
 
   if (allowAlternateHeaderRoots) {
-    // For chr models: binary[0x00] is a pointer that lands mid-tree.
-    // Walk Parent links from there to find the true HEADER root (null parent).
-    const candidateHeaderOffsets = [0x00, 0x04, 0x14, 0x18];
+    // GoldenEye chr binaries don't have a ModelFileHeader at a predictable offset.
+    //
+    // Body binaries: segment-5 pointers inside the node tree link parent ↔ child;
+    //   following any of them via walkToSceneRoot (parent chain) reaches the HEADER
+    //   root (opcode 0x01, null parent).
+    //
+    // Head binaries (e.g. CheadbrosnansnowZ.bin): the model is a single DLCOLLISION
+    //   node (opcode 0x18) with null parent/sibling/child pointers.  Its only seg-5
+    //   reference is the DataPtr (+0x04) that points to the RoData record.  There are
+    //   NO tree-link pointers pointing TO the node, so walkToSceneRoot on any target
+    //   will never reach it.  We detect this via reverse mapping: if a seg-5 pointer
+    //   sits at file offset F, the potential DataPtr node starts at F − 0x04.
+    //
+    // Strategy:
+    //   1. Scan all 4-byte-aligned positions for valid segment-5 pointers.
+    //   2. For each pointer target, add walkToSceneRoot(target) to the candidate set
+    //      (covers body binaries via tree-link pointers).
+    //   3. If the pointer is at field offset +0x04 within a plausible node (i.e. the
+    //      byte at offset F−0x04+0x01 is a known opcode 0x01–0x18), also add
+    //      walkToSceneRoot(F−0x04) to the candidate set (covers head binaries).
+    //   4. Score each candidate root; prefer HEADER (opcode 0x01) roots, then fall
+    //      back to highest-node-count.
+    const candidateRoots = new Set<number>();
+    for (let off = 0; off + 4 <= binary.length; off += 4) {
+      const ptr = readU32BE(binary, off);
+      const ptrOff = ptrToOffset(ptr, binary.length);
+      if (ptrOff === null) continue;
+
+      // Case A: pointer is a tree link (child/parent/sibling field) → walk to root.
+      candidateRoots.add(walkToSceneRoot(binary, ptrOff));
+
+      // Case B: pointer is the DataPtr (+0x04) of a node at off−0x04.
+      if (off >= 0x04 && off - 0x04 + 0x18 <= binary.length) {
+        const potentialNode = off - 0x04;
+        const opcode = readU16BE(binary, potentialNode) & 0xff;
+        if (opcode >= 0x01 && opcode <= 0x18) {
+          candidateRoots.add(walkToSceneRoot(binary, potentialNode));
+        }
+      }
+    }
+    // Also consider offset 0 directly in case the binary starts with a ModelNode.
+    if (binary.length >= 0x18) candidateRoots.add(0);
+
+    // Helper: true when a root looks like a plausible ModelNode start.
+    // Opcode must be in the known range and the DataPtr field must be null or a
+    // valid in-range segment-5 address.
+    const isPlausibleRoot = (root: number): boolean => {
+      if (root + 0x18 > binary.length) return false;
+      const opcode = readU16BE(binary, root) & 0xff;
+      if (opcode < 0x01 || opcode > 0x18) return false;
+      const dp = readU32BE(binary, root + 0x04);
+      return dp === 0 || ptrToOffset(dp, binary.length) !== null;
+    };
+
     let bestRoot: number | null = null;
     let bestScore = -1;
-    for (const hdrOff of candidateHeaderOffsets) {
-      const ptr = readU32BE(binary, hdrOff);
-      const startOff = ptrToOffset(ptr, binary.length);
-      if (startOff === null) continue;
-      const trueRoot = walkToSceneRoot(binary, startOff);
-      const score = countReachableNodesFromRoot(binary, trueRoot);
-      if (score > bestScore) {
-        bestScore = score;
-        bestRoot = trueRoot;
+    // Pass 1: prefer HEADER (opcode 0x01) roots.
+    for (const root of candidateRoots) {
+      if ((readU16BE(binary, root) & 0xff) !== 0x01) continue;
+      const score = countReachableNodesFromRoot(binary, root);
+      if (score > bestScore) { bestScore = score; bestRoot = root; }
+    }
+    // Pass 2: no HEADER found → plausible-opcode + valid-dataPtr roots only.
+    if (bestRoot === null) {
+      for (const root of candidateRoots) {
+        if (!isPlausibleRoot(root)) continue;
+        const score = countReachableNodesFromRoot(binary, root);
+        if (score > bestScore) { bestScore = score; bestRoot = root; }
+      }
+    }
+    // Pass 3: last resort — any root by score.
+    if (bestRoot === null) {
+      for (const root of candidateRoots) {
+        const score = countReachableNodesFromRoot(binary, root);
+        if (score > bestScore) { bestScore = score; bestRoot = root; }
       }
     }
     return bestRoot;

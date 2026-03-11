@@ -13,10 +13,13 @@ import {
   type ModelSwitchAnchor,
   type PropModelGeometry,
 } from "./parsePropBinaryModel.js";
-import { parsePropModelEntries, parseSetupIntro } from "./parseSetup.js";
+import { parsePropModelEntries, parseSetupIntro, type SetupIntroData } from "./parseSetup.js";
 
 interface BondIntroAsset {
   atlas?: AtlasManifest;
+  /** Parsed intro[] records from UsetuprunZ.c — fixedCams and swirlCams
+   *  drive the source-accurate CAMERAMODE_INTRO / CAMERAMODE_SWIRL sequence. */
+  intro: SetupIntroData;
   actor: {
     name: string;
     modelHint: string;
@@ -134,6 +137,7 @@ const gunEntry = propEntries.find((e) => e.name === "gun_runway1");
 if (!gunEntry) throw new Error("Missing gun_runway1 scale entry in propItemModelFileRecord.inc.c");
 
 const data: BondIntroAsset = {
+  intro,
   actor: {
     name: "BondIntroActor",
     modelHint: hints.modelHint,

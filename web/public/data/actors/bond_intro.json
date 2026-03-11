@@ -1,4 +1,199 @@
 {
+  "intro": {
+    "spawns": [
+      {
+        "pad": 53,
+        "isDemoPlayback": 0
+      },
+      {
+        "pad": 140,
+        "isDemoPlayback": 1
+      },
+      {
+        "pad": 142,
+        "isDemoPlayback": 2
+      }
+    ],
+    "startWeapons": [
+      {
+        "itemRight": 5,
+        "itemLeft": -1,
+        "isDemoPlayback": 0
+      },
+      {
+        "itemRight": 26,
+        "itemLeft": -1,
+        "isDemoPlayback": 1
+      },
+      {
+        "itemRight": 8,
+        "itemLeft": -1,
+        "isDemoPlayback": 2
+      }
+    ],
+    "startAmmo": [
+      {
+        "ammoType": 1,
+        "amount": 100,
+        "isDemoPlayback": 0
+      },
+      {
+        "ammoType": 5,
+        "amount": 6,
+        "isDemoPlayback": 1
+      },
+      {
+        "ammoType": 3,
+        "amount": 100,
+        "isDemoPlayback": 2
+      }
+    ],
+    "swirlCams": [
+      {
+        "animSlot": 2,
+        "x": 0,
+        "y": 4288413696,
+        "z": 13107200,
+        "theta": 49152,
+        "verta": 2621440,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 65536,
+        "y": 4288544768,
+        "z": 13172736,
+        "theta": 41949,
+        "verta": 2673867,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 4288675840,
+        "y": 4288413696,
+        "z": 11141120,
+        "theta": 49152,
+        "verta": 4300748,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 4283105280,
+        "y": 4293656576,
+        "z": 0,
+        "theta": 43645,
+        "verta": 3895320,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 4287758336,
+        "y": 2490368,
+        "z": 4289069056,
+        "theta": 41950,
+        "verta": 2952164,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 4293066752,
+        "y": 2097152,
+        "z": 4289200128,
+        "theta": 26349,
+        "verta": 2040098,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 4294639616,
+        "y": 655360,
+        "z": 4292345856,
+        "theta": 14838,
+        "verta": 2040098,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "theta": 66842,
+        "verta": 0,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 2,
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "theta": 32768,
+        "verta": 0,
+        "duration": 4294967295
+      },
+      {
+        "animSlot": 1,
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "theta": 0,
+        "verta": 0,
+        "duration": 4294967295
+      }
+    ],
+    "fixedCams": [
+      {
+        "x": 5946.68,
+        "y": 569.68,
+        "z": -10252.42,
+        "horzRad": 2.5481719970703125,
+        "vertRad": 6.1784515380859375,
+        "durationFrames": 172
+      },
+      {
+        "x": 10614.85,
+        "y": 453.68,
+        "z": -27156.78,
+        "horzRad": 3.228851318359375,
+        "vertRad": 6.1645050048828125,
+        "durationFrames": 165
+      },
+      {
+        "x": 8819.42,
+        "y": 1757.68,
+        "z": -5022.98,
+        "horzRad": 6.1138763427734375,
+        "vertRad": 5.878265380859375,
+        "durationFrames": 132
+      },
+      {
+        "x": 5389.93,
+        "y": 628.58,
+        "z": -6104.64,
+        "horzRad": 1.11700439453125,
+        "vertRad": 5.8643035888671875,
+        "durationFrames": 39
+      },
+      {
+        "x": 5389.83,
+        "y": 129.68,
+        "z": -8253.13,
+        "horzRad": 2.0865325927734375,
+        "vertRad": 0.048858642578125,
+        "durationFrames": 39
+      },
+      {
+        "x": 9252.87,
+        "y": -491.62,
+        "z": -6454.9,
+        "horzRad": 4.44403076171875,
+        "vertRad": 0.0698089599609375,
+        "durationFrames": 110
+      }
+    ],
+    "watchTimeSeconds": 1,
+    "watchTimeTenths": 10,
+    "cuffFlags": 3
+  },
   "actor": {
     "name": "BondIntroActor",
     "modelHint": "CsnowbondZ",
@@ -43794,7 +43989,9 @@
           "opcode": 24,
           "parentId": null,
           "nextId": null,
-          "childId": null
+          "childId": null,
+          "controlsNodeId": null,
+          "affectsNodeId": null
         }
       ],
       "switchTable": [],

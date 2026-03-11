@@ -221,8 +221,19 @@ export function parseSetupIntro(path) {
             });
             continue;
         }
-        if (type === "FixedCam" && ints.length > 0) {
-            intro.fixedCams.push({ raw: ints });
+        if (type === "FixedCam" && ints.length >= 6) {
+            // parsePayloadInts strips the _mkword(0,_mkshort(0,6)) type header,
+            // so ints[0..5] = camX×100, camY×100, camZ×100, horz×65536, vert×65536, durationFrames.
+            // The source array is s32; large hex literals must be sign-extended with | 0.
+            const s32 = (v) => v | 0;
+            intro.fixedCams.push({
+                x: s32(ints[0]) / 100.0,
+                y: s32(ints[1]) / 100.0,
+                z: s32(ints[2]) / 100.0,
+                horzRad: s32(ints[3]) / 65536.0,
+                vertRad: s32(ints[4]) / 65536.0,
+                durationFrames: s32(ints[5]),
+            });
             continue;
         }
         if (type === "WatchTime" && ints.length >= 2) {

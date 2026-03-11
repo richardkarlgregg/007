@@ -95,8 +95,33 @@ export interface IntroSwirlCamRecord {
   duration: number;
 }
 
+/**
+ * Decoded SetupIntroCamera record (type = FixedCam / INTROTYPE_CAMERA).
+ *
+ * Native struct SetupIntroCamera layout (bondtypes.h):
+ *   unk04/08/0C = world XYZ × 100  →  divide by 100.0 to get N64 world units
+ *   unk10       = horizontal look angle × 65536  →  divide by 65536.0 = radians
+ *   unk14       = vertical look angle × 65536    →  divide by 65536.0 = radians
+ *   unk18       = hold duration in frames (@ 60 fps)
+ *
+ * Look-at direction in native code (bondview.c):
+ *   lookX = cos(vertRad) * sin(horzRad)
+ *   lookY = sin(vertRad)
+ *   lookZ = -cos(vertRad) * cos(horzRad)
+ */
 export interface IntroFixedCamRecord {
-  raw: number[];
+  /** Camera world X in N64 units. */
+  x: number;
+  /** Camera world Y in N64 units. */
+  y: number;
+  /** Camera world Z in N64 units. */
+  z: number;
+  /** Horizontal look angle in radians. */
+  horzRad: number;
+  /** Vertical look angle in radians. */
+  vertRad: number;
+  /** How long to hold this camera, in frames (@ 60 fps). */
+  durationFrames: number;
 }
 
 export interface SetupIntroData {
@@ -362,8 +387,19 @@ export function parseSetupIntro(path: string): SetupIntroData {
       });
       continue;
     }
-    if (type === "FixedCam" && ints.length > 0) {
-      intro.fixedCams.push({ raw: ints });
+    if (type === "FixedCam" && ints.length >= 6) {
+      // parsePayloadInts strips the _mkword(0,_mkshort(0,6)) type header,
+      // so ints[0..5] = camX×100, camY×100, camZ×100, horz×65536, vert×65536, durationFrames.
+      // The source array is s32; large hex literals must be sign-extended with | 0.
+      const s32 = (v: number): number => v | 0;
+      intro.fixedCams.push({
+        x: s32(ints[0]) / 100.0,
+        y: s32(ints[1]) / 100.0,
+        z: s32(ints[2]) / 100.0,
+        horzRad: s32(ints[3]) / 65536.0,
+        vertRad: s32(ints[4]) / 65536.0,
+        durationFrames: s32(ints[5]),
+      });
       continue;
     }
     if (type === "WatchTime" && ints.length >= 2) {

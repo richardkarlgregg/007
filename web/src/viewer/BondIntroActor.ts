@@ -15,8 +15,28 @@ interface BondClip {
   keyframes: BondClipKeyframe[];
 }
 
+/** Minimal mirror of IntroSwirlCamRecord from parseSetup.ts */
+interface IntroSwirlCamRecord {
+  x: number; y: number; z: number;
+  theta: number; verta: number; duration: number;
+}
+
+/** Minimal mirror of IntroFixedCamRecord from parseSetup.ts */
+export interface IntroFixedCamRecord {
+  x: number; y: number; z: number;
+  horzRad: number; vertRad: number; durationFrames: number;
+}
+
+export interface SetupIntroData {
+  fixedCams: IntroFixedCamRecord[];
+  swirlCams: IntroSwirlCamRecord[];
+  [key: string]: unknown;
+}
+
 interface BondIntroAsset {
   atlas?: AtlasManifest;
+  /** Parsed intro camera data from the level setup file. */
+  intro?: SetupIntroData;
   actor: {
     name: string;
     modelHint: string;
@@ -78,6 +98,9 @@ export class BondIntroActor {
   readonly eyeAnchor = new THREE.Object3D();
   readonly weaponAnchor = new THREE.Object3D();
 
+  /** Intro camera data from the level setup file (may be absent for older exports). */
+  get introData(): SetupIntroData | undefined { return this.asset.intro; }
+
   private readonly bodyPivot = new THREE.Object3D();
   private readonly clip: BondClip;
   private readonly clipDuration: number;
@@ -90,6 +113,11 @@ export class BondIntroActor {
   setLodLevel(level: number): void {
     this.lodLevel = level;
     if (this.bodyGraphRuntime) applyGraphRelations(this.bodyGraphRuntime, this.lodLevel);
+  }
+
+  /** Reset clip playback to the beginning (call before entering SwirlOrbit). */
+  resetClip(): void {
+    this.elapsed = 0;
   }
 
   constructor(

@@ -336,30 +336,105 @@ async function bootstrap(): Promise<void> {
   );
   bondActor.setWorldPosition(playerStartPosition);
   bondActor.setFacingFromOrientation(playerFacing);
+  // Bond is hidden until SwirlOrbit (CAMERAMODE_SWIRL).
+  bondActor.group.visible = false;
   scene.add(bondActor.group);
 
   const introGun = bondActor.createGunMesh();
   introGun.position.set(0, 0, 0.5);
   introGun.rotation.set(-0.08, -Math.PI * 0.5, 0.02);
+  introGun.visible = false; // hidden until SwirlOrbit
   bondActor.weaponAnchor.add(introGun);
 
   const fpGun = bondActor.createGunMesh();
-  fpGun.position.set(0.18, -0.22, -0.56);
+  fpGun.position.set(0.18, -0.40, -0.56); // starts below screen (hand_invisible = -1)
   fpGun.rotation.set(-0.1, -Math.PI * 0.5, 0.04);
-  // Disabled until true first-person hand model pipeline is implemented.
-  fpGun.visible = false;
+  fpGun.visible = false; // shown when entering FirstPerson
   camera.add(fpGun);
   scene.add(camera);
 
-  type PlayerCameraMode = "IntroOrbit" | "EnterFirstPerson" | "FirstPerson";
-  let playerCameraMode: PlayerCameraMode = "IntroOrbit";
+  // ── Source-accurate intro state machine ───────────────────────────────────
+  // CAMERAMODE_INTRO     → static cinematic camera (FixedCam)
+  // CAMERAMODE_FADESWIRL → fade to black over ~1 s
+  // CAMERAMODE_SWIRL     → Bond visible, orbital camera clip
+  // CAMERAMODE_FP        → first-person player control, gun rises into view
+  type PlayerCameraMode =
+    | "StaticIntro"       // CAMERAMODE_INTRO
+    | "FadeToSwirl"       // CAMERAMODE_FADESWIRL
+    | "SwirlOrbit"        // CAMERAMODE_SWIRL
+    | "EnterFirstPerson"  // transition from swirl to FP (0.85 s lerp)
+    | "FirstPerson";      // CAMERAMODE_FP — full player control
+
+  let playerCameraMode: PlayerCameraMode = "StaticIntro";
   let modeBeforeDevFly: PlayerCameraMode | null = null;
-  let enterFpElapsed = 0;
+  let modeElapsed = 0;
+
+  // StaticIntro — chosen FixedCam camera
+  const staticIntroPos = new THREE.Vector3();
+  const staticIntroLookAt = new THREE.Vector3();
+  const staticIntroDuration = 5.0; // seconds before auto-advance
+
+  // ── Initialise StaticIntro camera position from FixedCam data ────────────
+  // Native: CAMERAMODE_INTRO — camera at SetupIntroCamera.pos, looking along
+  // spherical angles (horzRad, vertRad) decoded in parseSetup.ts.
+  const introCams = bondActor.introData?.fixedCams ?? [];
+  if (introCams.length > 0) {
+    const cam = introCams[Math.floor(Math.random() * introCams.length)];
+    staticIntroPos.set(
+      cam.x * stageScale,
+      cam.y * stageScale,
+      cam.z * stageScale
+    );
+    // Native bondview.c look-direction formula:
+    //   lookX = cos(vertRad) * sin(horzRad)
+    //   lookY = sin(vertRad)
+    //   lookZ = -cos(vertRad) * cos(horzRad)
+    const lx = Math.cos(cam.vertRad) * Math.sin(cam.horzRad);
+    const ly = Math.sin(cam.vertRad);
+    const lz = -Math.cos(cam.vertRad) * Math.cos(cam.horzRad);
+    staticIntroLookAt.copy(staticIntroPos).addScaledVector(
+      new THREE.Vector3(lx, ly, lz).normalize(), 100
+    );
+  } else {
+    // Fallback: look at Bond from a position overhead
+    staticIntroPos.set(
+      playerStartPosition.x + 80 * stageScale,
+      playerStartPosition.y + 60 * stageScale,
+      playerStartPosition.z + 120 * stageScale
+    );
+    staticIntroLookAt.copy(playerStartPosition);
+  }
+  camera.position.copy(staticIntroPos);
+  camera.lookAt(staticIntroLookAt);
+  yaw   = camera.rotation.y;
+  pitch = camera.rotation.x;
+
+  // FadeToSwirl — 1 second fade to black
+  const fadeToSwirlDuration = 1.0;
+
+  // EnterFirstPerson — lerp from swirl cam to FPS eye position
   const enterFpDuration = 0.85;
   const enterStartPos = new THREE.Vector3();
   const enterTargetPos = new THREE.Vector3();
   const enterStartQuat = new THREE.Quaternion();
   const enterTargetQuat = new THREE.Quaternion();
+
+  // Shared fade-overlay state: 0 = transparent, 1 = opaque black
+  let fadeAlpha = 1.0; // starts opaque (fades in at StaticIntro entry)
+  const fadeOverlayEl = (() => {
+    const el = document.createElement("div");
+    el.style.cssText = [
+      "position:fixed", "inset:0", "background:#000",
+      "pointer-events:none", "z-index:50", "opacity:1"
+    ].join(";");
+    document.body.appendChild(el);
+    return el;
+  })();
+  function setFadeAlpha(a: number): void {
+    fadeAlpha = Math.max(0, Math.min(1, a));
+    fadeOverlayEl.style.opacity = String(fadeAlpha);
+  }
+
   const preFlyPos = new THREE.Vector3();
   const preFlyQuat = new THREE.Quaternion();
   let preFlyYaw = yaw;
@@ -1035,7 +1110,73 @@ async function bootstrap(): Promise<void> {
     );
   })();
 
-  function updateIntroCamera(delta: number): void {
+  // ── CAMERAMODE_INTRO ─────────────────────────────────────────────────────
+  // Static cinematic camera from FixedCam data.  Fades in from black, then
+  // auto-advances (or skips on button press) after staticIntroDuration.
+  function enterStaticIntro(): void {
+    playerCameraMode = "StaticIntro";
+    modeElapsed = 0;
+    bondActor.group.visible = false;
+    introGun.visible = false;
+    fpGun.visible = false;
+    camera.position.copy(staticIntroPos);
+    camera.lookAt(staticIntroLookAt);
+    yaw   = camera.rotation.y;
+    pitch = camera.rotation.x;
+    setFadeAlpha(1.0); // fade in from black
+  }
+
+  function updateStaticIntro(delta: number): void {
+    modeElapsed += delta;
+    // Fade in from black over 60 frames (~1 s).
+    const fadeInSec = 1.0;
+    setFadeAlpha(Math.max(0, 1.0 - modeElapsed / fadeInSec));
+    // Hold camera on FixedCam position.
+    camera.position.copy(staticIntroPos);
+    camera.lookAt(staticIntroLookAt);
+    yaw   = camera.rotation.y;
+    pitch = camera.rotation.x;
+    if (modeElapsed >= staticIntroDuration) {
+      enterFadeToSwirl();
+    }
+  }
+
+  // ── CAMERAMODE_FADESWIRL ─────────────────────────────────────────────────
+  // 1 second fade to black, then transition to SwirlOrbit.
+  function enterFadeToSwirl(): void {
+    playerCameraMode = "FadeToSwirl";
+    modeElapsed = 0;
+    setFadeAlpha(0.0);
+  }
+
+  function updateFadeToSwirl(delta: number): void {
+    modeElapsed += delta;
+    const t = Math.min(1.0, modeElapsed / fadeToSwirlDuration);
+    setFadeAlpha(t); // 0 → 1 (fade to black)
+    if (modeElapsed >= fadeToSwirlDuration) {
+      enterSwirlOrbit();
+    }
+  }
+
+  // ── CAMERAMODE_SWIRL ─────────────────────────────────────────────────────
+  // Bond becomes visible; orbital camera clip plays.  Reuses the hand-authored
+  // clip on BondIntroActor (yaw, weaponRaise, lean).
+  function enterSwirlOrbit(): void {
+    playerCameraMode = "SwirlOrbit";
+    modeElapsed = 0;
+    bondActor.resetClip();
+    bondActor.group.visible = true;
+    introGun.visible = true;
+    fpGun.visible = false;
+    setFadeAlpha(0.0); // fade in from black
+  }
+
+  function updateSwirlOrbit(delta: number): void {
+    modeElapsed += delta;
+    // Fade in from black over 60 frames.
+    const fadeInSec = 1.0;
+    setFadeAlpha(Math.max(0, fadeInSec === 0 ? 0 : 1.0 - modeElapsed / fadeInSec));
+
     const pose = bondActor.tick(delta);
     bondActor.eyeAnchor.getWorldPosition(introEyeWorld);
     const eyeWorld = tmpEye.copy(introEyeWorld);
@@ -1056,48 +1197,55 @@ async function bootstrap(): Promise<void> {
     tmpLookAt.copy(eyeWorld);
     tmpLookAt.y += THREE.MathUtils.lerp(5, 0, t);
     camera.lookAt(tmpLookAt);
-    yaw = camera.rotation.y;
+    yaw   = camera.rotation.y;
     pitch = camera.rotation.x;
-    introGun.visible = true;
-    fpGun.visible = false;
-    fpGun.position.y = -0.24 + 0.16 * pose.weaponRaise;
+    fpGun.position.y = -0.40 + 0.18 * pose.weaponRaise;
 
     if (t >= 0.999) {
-      playerCameraMode = "EnterFirstPerson";
-      enterFpElapsed = 0;
-      enterStartPos.copy(camera.position);
-      enterStartQuat.copy(camera.quaternion);
-      enterTargetPos.copy(eyeWorld);
-      tmpLookAt.copy(eyeWorld).addScaledVector(playerFacing, 32);
-      const look = new THREE.Matrix4().lookAt(eyeWorld, tmpLookAt, new THREE.Vector3(0, 1, 0));
-      enterTargetQuat.setFromRotationMatrix(look).invert();
-      introGun.visible = false;
-      fpGun.visible = false;
-      renderer.domElement.requestPointerLock();
+      enterEnterFirstPerson(eyeWorld);
     }
   }
 
+  // ── Transition → CAMERAMODE_FP ───────────────────────────────────────────
+  function enterEnterFirstPerson(eyeWorld: THREE.Vector3): void {
+    playerCameraMode = "EnterFirstPerson";
+    modeElapsed = 0;
+    enterStartPos.copy(camera.position);
+    enterStartQuat.copy(camera.quaternion);
+    enterTargetPos.copy(eyeWorld);
+    tmpLookAt.copy(eyeWorld).addScaledVector(playerFacing, 32);
+    const look = new THREE.Matrix4().lookAt(eyeWorld, tmpLookAt, new THREE.Vector3(0, 1, 0));
+    enterTargetQuat.setFromRotationMatrix(look).invert();
+    introGun.visible = false;
+    // Gun starts below viewport (hand_invisible = -1) and will rise as we enter FP.
+    fpGun.visible = true;
+    fpGun.position.y = -0.40;
+    renderer.domElement.requestPointerLock();
+  }
+
   function updateEnterFirstPerson(delta: number): void {
-    enterFpElapsed = Math.min(enterFpDuration, enterFpElapsed + delta);
-    const t = THREE.MathUtils.smoothstep(enterFpElapsed / enterFpDuration, 0, 1);
+    modeElapsed = Math.min(enterFpDuration, modeElapsed + delta);
+    const t = THREE.MathUtils.smoothstep(modeElapsed / enterFpDuration, 0, 1);
     camera.position.lerpVectors(enterStartPos, enterTargetPos, t);
     tmpCameraQuat.slerpQuaternions(enterStartQuat, enterTargetQuat, t);
     camera.quaternion.copy(tmpCameraQuat);
-    yaw = camera.rotation.y;
+    yaw   = camera.rotation.y;
     pitch = camera.rotation.x;
-    fpGun.position.y = THREE.MathUtils.lerp(-0.08, -0.22, t);
-    if (enterFpElapsed >= enterFpDuration) {
+    // Gun rises from -0.40 to -0.22 as camera enters FP (mirrors hand_invisible counter).
+    fpGun.position.y = THREE.MathUtils.lerp(-0.40, -0.22, t);
+    if (modeElapsed >= enterFpDuration) {
       playerCameraMode = "FirstPerson";
       bondActor.group.visible = false;
       fpGun.position.y = -0.22;
-      fpGun.visible = false;
+      fpGun.visible = true;
       playerGroundPos.copy(enterTargetPos);
       playerGroundPos.y = playerStartPosition.y;
-      yaw = camera.rotation.y;
+      yaw   = camera.rotation.y;
       pitch = camera.rotation.x;
     }
   }
 
+  // ── CAMERAMODE_FP ─────────────────────────────────────────────────────────
   function updateFirstPersonMovement(delta: number): void {
     const moveSpeed = 182;
     const accel = 820;
@@ -1138,6 +1286,7 @@ async function bootstrap(): Promise<void> {
     bondActor.group.visible = true;
     introGun.visible = true;
     fpGun.visible = false;
+    setFadeAlpha(0);
     renderer.domElement.requestPointerLock();
   }
 
@@ -1155,12 +1304,21 @@ async function bootstrap(): Promise<void> {
       playerCameraMode = modeBeforeDevFly;
     }
     // Restore gameplay visibility based on resumed mode.
-    if (playerCameraMode === "FirstPerson") {
-      bondActor.group.visible = false;
-      introGun.visible = false;
-      fpGun.visible = false;
-    }
+    const inFP = playerCameraMode === "FirstPerson" || playerCameraMode === "EnterFirstPerson";
+    bondActor.group.visible = !inFP;
+    introGun.visible = playerCameraMode === "SwirlOrbit";
+    fpGun.visible = inFP;
     modeBeforeDevFly = null;
+  }
+
+  // Skip static intro or swirl on any key/click (after 0.5 s guard).
+  function trySkipIntro(): void {
+    if (playerCameraMode === "StaticIntro" && modeElapsed > 0.5) {
+      enterFadeToSwirl();
+    } else if (playerCameraMode === "SwirlOrbit" && modeElapsed > 1.0) {
+      bondActor.eyeAnchor.getWorldPosition(introEyeWorld);
+      enterEnterFirstPerson(introEyeWorld);
+    }
   }
 
   function setMovementKey(key: string, down: boolean): boolean {
@@ -1514,6 +1672,8 @@ async function bootstrap(): Promise<void> {
   }
 
   renderer.domElement.addEventListener("click", (event) => {
+    // Skip intro on click.
+    trySkipIntro();
     // When not in fly mode, left-click on canvas requests pointer lock (enters fly).
     // The click that triggers pointer lock is consumed here; subsequent clicks
     // while locked are ignored so we don't accidentally fire the inspector.
@@ -1552,6 +1712,10 @@ async function bootstrap(): Promise<void> {
   });
 
   window.addEventListener("keydown", (event) => {
+    // Space or Enter can skip the static intro / swirl phases.
+    if (event.key === " " || event.key === "Enter") {
+      trySkipIntro();
+    }
     if (event.key === "1") {
       bgVisible = !bgVisible;
       syncRemasterLayers();
@@ -1659,6 +1823,9 @@ async function bootstrap(): Promise<void> {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  // Kick off the intro sequence proper (fades in from opaque black).
+  enterStaticIntro();
+
   const animate = (): void => {
     const delta = clock.getDelta();
     const moveX = (movementKeys.right ? 1 : 0) - (movementKeys.left ? 1 : 0);
@@ -1677,8 +1844,12 @@ async function bootstrap(): Promise<void> {
           camera.position.add(move);
         }
       }
-    } else if (playerCameraMode === "IntroOrbit") {
-      updateIntroCamera(delta);
+    } else if (playerCameraMode === "StaticIntro") {
+      updateStaticIntro(delta);
+    } else if (playerCameraMode === "FadeToSwirl") {
+      updateFadeToSwirl(delta);
+    } else if (playerCameraMode === "SwirlOrbit") {
+      updateSwirlOrbit(delta);
     } else if (playerCameraMode === "EnterFirstPerson") {
       updateEnterFirstPerson(delta);
     } else {

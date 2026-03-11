@@ -78,6 +78,7 @@ const gunEntry = propEntries.find((e) => e.name === "gun_runway1");
 if (!gunEntry)
     throw new Error("Missing gun_runway1 scale entry in propItemModelFileRecord.inc.c");
 const data = {
+    intro,
     actor: {
         name: "BondIntroActor",
         modelHint: hints.modelHint,
