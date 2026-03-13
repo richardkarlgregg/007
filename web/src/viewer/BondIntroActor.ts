@@ -51,11 +51,23 @@ interface BondIntroAsset {
     shoulderWidth: number;
     handForward: number;
   };
+  fpWeapon?: {
+    statsName?: string;
+    posX?: number;
+    posY?: number;
+    posZ?: number;
+    sway?: number;
+  };
   models: {
     body: PropModelGeometry;
     head: PropModelGeometry;
-    gun: PropModelGeometry;
-    gunSourceScale: number;
+    gun?: PropModelGeometry;
+    gunSourceScale?: number;
+    gunIntro?: PropModelGeometry;
+    gunIntroSourceScale?: number;
+    gunFp?: PropModelGeometry;
+    gunFpSourceScale?: number;
+    gunFpBoundingRadius?: number;
   };
   joints: {
     body: Array<{
@@ -83,6 +95,7 @@ interface BondIntroAsset {
   graph?: {
     body: ModelGraphData;
     head: ModelGraphData;
+    gunFp?: ModelGraphData;
   };
   clips: BondClip[];
 }
@@ -100,12 +113,23 @@ export class BondIntroActor {
 
   /** Intro camera data from the level setup file (may be absent for older exports). */
   get introData(): SetupIntroData | undefined { return this.asset.intro; }
+  get fpWeaponConfig(): Required<NonNullable<BondIntroAsset["fpWeapon"]>> {
+    const fp = this.asset.fpWeapon ?? {};
+    return {
+      statsName: fp.statsName ?? "wppk",
+      posX: fp.posX ?? 11.0,
+      posY: fp.posY ?? -20.8,
+      posZ: fp.posZ ?? -33.5,
+      sway: fp.sway ?? 8.5,
+    };
+  }
 
   private readonly bodyPivot = new THREE.Object3D();
   private readonly clip: BondClip;
   private readonly clipDuration: number;
   private elapsed = 0;
   private readonly gunMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
+  private readonly gunAtlasMaterial: THREE.ShaderMaterial | null = null;
   private bodyGraphRuntime: GraphRuntime | null = null;
   private headGraphRuntime: GraphRuntime | null = null;
   private lodLevel = 0;
@@ -138,6 +162,7 @@ export class BondIntroActor {
     const atlasMat = (asset.atlas && atlasTexture)
       ? buildAtlasMaterial(asset.atlas, atlasTexture, fogUniforms)
       : null;
+    this.gunAtlasMaterial = atlasMat;
 
     if (enableGraphRuntime && asset.graph?.body?.nodes?.length && asset.graph?.body?.chunks?.length) {
       this.bodyGraphRuntime = buildGraphRuntime(asset.graph.body, atlasMat);
@@ -232,11 +257,101 @@ export class BondIntroActor {
     return this.elapsed / this.clipDuration;
   }
 
-  createGunMesh(): THREE.Mesh {
-    const gun = meshFromPropModel(this.asset.models.gun, this.gunMaterial, true);
-    gun.scale.setScalar(this.asset.models.gunSourceScale);
+  createIntroGunMesh(): THREE.Mesh {
+    const geo = this.asset.models.gunIntro ?? this.asset.models.gun;
+    const sourceScale = this.asset.models.gunIntroSourceScale ?? this.asset.models.gunSourceScale ?? 1.0;
+    if (!geo) throw new Error("Bond intro asset missing intro gun geometry");
+    return this.createGunMeshFromGeo(geo, sourceScale);
+  }
+
+  createFpGunMesh(): THREE.Object3D {
+    const gunGraph = this.asset.graph?.gunFp;
+    if (!gunGraph?.nodes?.length || !gunGraph?.chunks?.length) {
+      throw new Error("Bond intro asset missing strict first-person gun graph");
+    }
+    const runtime = buildGraphRuntime(gunGraph, this.gunAtlasMaterial);
+    applyGraphRelations(runtime, 0);
+
+    // Source gun.c: matrix_scalar_multiply(D_80053E04, matrix) where D_80053E04
+    // = 0.10000001. Scales the 3×3 rotation sub-matrix (entries 0-11),
+    // leaving translation untouched. This is a uniform geometry scale of 0.1.
+    runtime.root.scale.multiplyScalar(0.10000001);
+
+    // Gun viewmodel: assign to layer 1 so the caller can render it in a
+    // separate pass after clearing depth, preventing level geometry from
+    // occluding the gun while still allowing correct self-sorting.
+    runtime.root.traverse((node: THREE.Object3D) => {
+      node.layers.set(1);
+      if (!(node instanceof THREE.Mesh)) return;
+      node.frustumCulled = false;
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      for (const mat of mats) {
+        mat.depthTest = true;
+        mat.depthWrite = true;
+        mat.transparent = false;
+        mat.side = THREE.DoubleSide;
+        mat.needsUpdate = true;
+      }
+    });
+
+    let meshCount = 0;
+    let vertexCount = 0;
+    runtime.root.traverse((node: THREE.Object3D) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      meshCount += 1;
+      const pos = node.geometry.getAttribute("position");
+      if (pos) vertexCount += pos.count;
+    });
+    console.log("[fpGun:create]", {
+      graphNodes: gunGraph.nodes.length,
+      graphChunks: gunGraph.chunks.length,
+      meshCount,
+      vertexCount,
+      scale: runtime.root.scale.toArray(),
+    });
+    return runtime.root;
+  }
+
+  private createGunMeshFromGeo(geo: PropModelGeometry, sourceScale: number, targetRadius?: number): THREE.Mesh {
+    if (this.gunAtlasMaterial) {
+      const geometry = buildPropGeometry(geo);
+      const gun = new THREE.Mesh(geometry, this.gunAtlasMaterial);
+      let scale = sourceScale;
+      if (targetRadius && targetRadius > 0) {
+        const cur = boundsRadius(geo.sourceBounds ?? geo.bounds);
+        if (cur > 0.0001) scale *= targetRadius / cur;
+      }
+      gun.scale.setScalar(scale);
+      return gun;
+    }
+    const gun = meshFromPropModel(geo, this.gunMaterial, true, targetRadius);
+    gun.scale.setScalar(sourceScale);
     return gun;
   }
+}
+
+function boundsRadius(
+  bounds:
+    | { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } }
+    | undefined
+): number {
+  if (!bounds) return 0;
+  const corners: Array<{ x: number; y: number; z: number }> = [
+    { x: bounds.min.x, y: bounds.min.y, z: bounds.min.z },
+    { x: bounds.min.x, y: bounds.min.y, z: bounds.max.z },
+    { x: bounds.min.x, y: bounds.max.y, z: bounds.min.z },
+    { x: bounds.min.x, y: bounds.max.y, z: bounds.max.z },
+    { x: bounds.max.x, y: bounds.min.y, z: bounds.min.z },
+    { x: bounds.max.x, y: bounds.min.y, z: bounds.max.z },
+    { x: bounds.max.x, y: bounds.max.y, z: bounds.min.z },
+    { x: bounds.max.x, y: bounds.max.y, z: bounds.max.z },
+  ];
+  let r = 0;
+  for (const c of corners) {
+    const d = Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+    if (d > r) r = d;
+  }
+  return r;
 }
 
 interface GraphRuntimeNode {
@@ -302,22 +417,43 @@ function buildGraphRuntime(
 }
 
 function computeGraphRadiusScale(graph: ModelGraphData, targetRadius: number): number {
-  const src = graph.sourceBounds;
-  if (!src) return 1.0;
-  const corners: Array<{ x: number; y: number; z: number }> = [
-    { x: src.min.x, y: src.min.y, z: src.min.z },
-    { x: src.min.x, y: src.min.y, z: src.max.z },
-    { x: src.min.x, y: src.max.y, z: src.min.z },
-    { x: src.min.x, y: src.max.y, z: src.max.z },
-    { x: src.max.x, y: src.min.y, z: src.min.z },
-    { x: src.max.x, y: src.min.y, z: src.max.z },
-    { x: src.max.x, y: src.max.y, z: src.min.z },
-    { x: src.max.x, y: src.max.y, z: src.max.z },
-  ];
   let curR = 0;
-  for (const c of corners) {
-    const r = Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
-    if (r > curR) curR = r;
+  const src = graph.sourceBounds;
+  if (src) {
+    const corners: Array<{ x: number; y: number; z: number }> = [
+      { x: src.min.x, y: src.min.y, z: src.min.z },
+      { x: src.min.x, y: src.min.y, z: src.max.z },
+      { x: src.min.x, y: src.max.y, z: src.min.z },
+      { x: src.min.x, y: src.max.y, z: src.max.z },
+      { x: src.max.x, y: src.min.y, z: src.min.z },
+      { x: src.max.x, y: src.min.y, z: src.max.z },
+      { x: src.max.x, y: src.max.y, z: src.min.z },
+      { x: src.max.x, y: src.max.y, z: src.max.z },
+    ];
+    for (const c of corners) {
+      const r = Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+      if (r > curR) curR = r;
+    }
+  } else {
+    // FP gun graph exports currently omit sourceBounds; derive a strict radius
+    // from chunk bounds to preserve source-scale normalization.
+    for (const chunk of graph.chunks) {
+      const b = chunk.bounds;
+      const corners: Array<{ x: number; y: number; z: number }> = [
+        { x: b.min.x, y: b.min.y, z: b.min.z },
+        { x: b.min.x, y: b.min.y, z: b.max.z },
+        { x: b.min.x, y: b.max.y, z: b.min.z },
+        { x: b.min.x, y: b.max.y, z: b.max.z },
+        { x: b.max.x, y: b.min.y, z: b.min.z },
+        { x: b.max.x, y: b.min.y, z: b.max.z },
+        { x: b.max.x, y: b.max.y, z: b.min.z },
+        { x: b.max.x, y: b.max.y, z: b.max.z },
+      ];
+      for (const c of corners) {
+        const r = Math.sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+        if (r > curR) curR = r;
+      }
+    }
   }
   if (!(curR > 0.0001)) return 1.0;
   return targetRadius / curR;
@@ -380,7 +516,7 @@ function applyGraphRelations(runtime: GraphRuntime, lodLevel = 0): void {
   // the correct LOD level in each sibling chain.
   const lodCountByParent = new Map<number | null, number>();
 
-  const visitList = (startId: number | null | undefined): void => {
+  const visitList = (startId: number | null | undefined, allowNext = true): void => {
     let cur = startId;
     let guard = 0;
     while (cur !== null && cur !== undefined && guard < 100000) {
@@ -411,10 +547,22 @@ function applyGraphRelations(runtime: GraphRuntime, lodLevel = 0): void {
         childStart = n.def.affectsNodeId ?? n.def.childId;
       }
       if (childStart !== null && childStart !== undefined) {
-        visitList(childStart);
+        // Mirror traversal constraints used by model tree walk:
+        // switch-controlled branch should not implicitly traverse sibling masks.
+        visitList(childStart, n.def.opcode !== 0x12);
+      }
+      if (n.def.opcode === 0x09) {
+        // BSP nodes reorder two sibling groups for painter's order.
+        // Both sides remain part of traversal; only order changes at runtime.
+        if (n.def.leftNodeId !== null && n.def.leftNodeId !== undefined) {
+          visitList(n.def.leftNodeId, true);
+        }
+        if (n.def.rightNodeId !== null && n.def.rightNodeId !== undefined) {
+          visitList(n.def.rightNodeId, true);
+        }
       }
 
-      cur = n.def.nextId;
+      cur = allowNext ? n.def.nextId : null;
     }
   };
 

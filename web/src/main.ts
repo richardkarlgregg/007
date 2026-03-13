@@ -340,18 +340,54 @@ async function bootstrap(): Promise<void> {
   bondActor.group.visible = false;
   scene.add(bondActor.group);
 
-  const introGun = bondActor.createGunMesh();
+  const introGun = bondActor.createIntroGunMesh();
   introGun.position.set(0, 0, 0.5);
   introGun.rotation.set(-0.08, -Math.PI * 0.5, 0.02);
   introGun.visible = false; // hidden until SwirlOrbit
   bondActor.weaponAnchor.add(introGun);
 
-  const fpGun = bondActor.createGunMesh();
-  fpGun.position.set(0.18, -0.40, -0.56); // starts below screen (hand_invisible = -1)
-  fpGun.rotation.set(-0.1, -Math.PI * 0.5, 0.04);
-  fpGun.visible = false; // shown when entering FirstPerson
+  const fpGun = bondActor.createFpGunMesh();
+  fpGun.visible = false;
   camera.add(fpGun);
+
   scene.add(camera);
+  let fpGunDetached = false;
+
+  function setFpGunDetached(detached: boolean): void {
+    if (fpGunDetached === detached) return;
+    fpGunDetached = detached;
+    if (detached) {
+      // Keep world transform then drop it in front of the camera for inspection.
+      scene.attach(fpGun);
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+      fpGun.position.copy(camera.position).addScaledVector(forward, 5.0);
+      fpGun.quaternion.copy(camera.quaternion);
+      fpGun.visible = true;
+    } else {
+      // Reattach to source-driven viewmodel transform path.
+      camera.attach(fpGun);
+      fpGun.visible = playerCameraMode === "EnterFirstPerson" || playerCameraMode === "FirstPerson";
+      updateFpWeaponMatrix(1 / 60);
+    }
+  }
+
+  // Source-accurate hand weapon placement (gun.c copy_item_in_hand):
+  // WeaponStats PosX/PosY/PosZ + D_80053E00 (27.8) vertical lift.
+  // matrix_scalar_multiply(D_80053E04=0.1) scales the 3×3 rotation submatrix
+  // (entries 0-11) but leaves the translation row untouched, so position is
+  // NOT divided by the scale factor.
+  const fpWeapon = bondActor.fpWeaponConfig;
+  const fpWeaponBase = new THREE.Vector3(
+    fpWeapon.posX,
+    fpWeapon.posY + 27.8,
+    fpWeapon.posZ
+  );
+  let fpWeaponRaise = 0; // 0 = hidden (-1 hand_invisible), 1 = fully raised
+  let fpThetaDisp = 0;
+  let fpVertaDisp = 0;
+  let lastAimYaw = yaw;
+  let lastAimPitch = pitch;
+  let fpGunLogTimer = 0;
 
   // ── Source-accurate intro state machine ───────────────────────────────────
   // CAMERAMODE_INTRO     → static cinematic camera (FixedCam)
@@ -433,6 +469,37 @@ async function bootstrap(): Promise<void> {
   function setFadeAlpha(a: number): void {
     fadeAlpha = Math.max(0, Math.min(1, a));
     fadeOverlayEl.style.opacity = String(fadeAlpha);
+  }
+
+  function updateFpWeaponMatrix(delta: number): void {
+    if (fpGunDetached) return;
+    const dt = Math.max(0.0001, delta);
+    const yawRate = (yaw - lastAimYaw) / dt;
+    const pitchRate = (pitch - lastAimPitch) / dt;
+    lastAimYaw = yaw;
+    lastAimPitch = pitch;
+
+    // Source: hands[].weapon_theta_displacement / weapon_verta_displacement.
+    fpThetaDisp = THREE.MathUtils.damp(fpThetaDisp, -1.75 * yawRate * 0.01, 12.0, dt);
+    fpVertaDisp = THREE.MathUtils.damp(fpVertaDisp, -2.0 * pitchRate * 0.01, 12.0, dt);
+    if (!Number.isFinite(fpThetaDisp)) fpThetaDisp = 0;
+    if (!Number.isFinite(fpVertaDisp)) fpVertaDisp = 0;
+
+    // Sway offsets in native coordinate space (not scaled by 0.1).
+    const swayX = fpThetaDisp * 1.2;
+    const swayY = fpVertaDisp * 1.2;
+    const hiddenYOffset = (1.0 - fpWeaponRaise) * -8.0;
+
+    fpGun.position.set(
+      fpWeaponBase.x + swayX,
+      fpWeaponBase.y + hiddenYOffset + swayY,
+      fpWeaponBase.z
+    );
+    fpGun.rotation.set(
+      fpVertaDisp * 0.25,
+      -fpThetaDisp * 0.2,
+      0
+    );
   }
 
   const preFlyPos = new THREE.Vector3();
@@ -1237,7 +1304,7 @@ async function bootstrap(): Promise<void> {
     camera.lookAt(tmpLookAt);
     yaw   = camera.rotation.y;
     pitch = camera.rotation.x;
-    fpGun.position.y = -0.40 + 0.18 * pose.weaponRaise;
+    fpWeaponRaise = pose.weaponRaise;
 
     if (t >= 0.999) {
       enterEnterFirstPerson(eyeWorld);
@@ -1256,8 +1323,11 @@ async function bootstrap(): Promise<void> {
     enterTargetQuat.setFromRotationMatrix(look).invert();
     introGun.visible = false;
     // Gun starts below viewport (hand_invisible = -1) and will rise as we enter FP.
-    fpGun.visible = true;
-    fpGun.position.y = -0.40;
+    fpGun.visible = !fpGunDetached;
+    fpWeaponRaise = 0;
+    fpThetaDisp = 0;
+    fpVertaDisp = 0;
+    updateFpWeaponMatrix(1 / 60);
     renderer.domElement.requestPointerLock();
   }
 
@@ -1269,17 +1339,20 @@ async function bootstrap(): Promise<void> {
     camera.quaternion.copy(tmpCameraQuat);
     yaw   = camera.rotation.y;
     pitch = camera.rotation.x;
-    // Gun rises from -0.40 to -0.22 as camera enters FP (mirrors hand_invisible counter).
-    fpGun.position.y = THREE.MathUtils.lerp(-0.40, -0.22, t);
+    // hand_invisible transition: hidden (-1) -> visible (1)
+    fpWeaponRaise = t;
+    updateFpWeaponMatrix(delta);
     if (modeElapsed >= enterFpDuration) {
       playerCameraMode = "FirstPerson";
       bondActor.group.visible = false;
-      fpGun.position.y = -0.22;
-      fpGun.visible = true;
+      fpWeaponRaise = 1;
+      fpGun.visible = !fpGunDetached;
       playerGroundPos.copy(enterTargetPos);
       playerGroundPos.y = playerStartPosition.y;
       yaw   = camera.rotation.y;
       pitch = camera.rotation.x;
+      lastAimYaw = yaw;
+      lastAimPitch = pitch;
     }
   }
 
@@ -1310,6 +1383,8 @@ async function bootstrap(): Promise<void> {
     camera.rotation.order = "YXZ";
     camera.rotation.y = yaw;
     camera.rotation.x = pitch;
+    fpWeaponRaise = 1;
+    updateFpWeaponMatrix(delta);
   }
 
   function enterDevFlyMode(): void {
@@ -1323,7 +1398,7 @@ async function bootstrap(): Promise<void> {
     // Reveal Bond + intro weapon while inspecting from detached fly camera.
     bondActor.group.visible = true;
     introGun.visible = true;
-    fpGun.visible = false;
+    fpGun.visible = fpGunDetached;
     setFadeAlpha(0);
     renderer.domElement.requestPointerLock();
   }
@@ -1345,7 +1420,11 @@ async function bootstrap(): Promise<void> {
     const inFP = playerCameraMode === "FirstPerson" || playerCameraMode === "EnterFirstPerson";
     bondActor.group.visible = !inFP;
     introGun.visible = playerCameraMode === "SwirlOrbit";
-    fpGun.visible = inFP;
+    fpGun.visible = fpGunDetached ? true : inFP;
+    fpThetaDisp = 0;
+    fpVertaDisp = 0;
+    lastAimYaw = yaw;
+    lastAimPitch = pitch;
     modeBeforeDevFly = null;
   }
 
@@ -1856,6 +1935,8 @@ async function bootstrap(): Promise<void> {
         enterDevFlyMode();
       }
       setFlyMode(devFlyEnabled && document.pointerLockElement === renderer.domElement);
+    } else if (event.key === "k" || event.key === "K") {
+      setFpGunDetached(!fpGunDetached);
     } else if (event.key === "Escape") {
       if (flyMode) {
         document.exitPointerLock();
@@ -1904,14 +1985,70 @@ async function bootstrap(): Promise<void> {
     } else {
       updateFirstPersonMovement(delta);
     }
-    uiStatus.textContent = `mode: ${playerCameraMode} | weapon: ${startingWeaponName}${devFlyEnabled ? " | dev-fly" : ""}`;
+    if (playerCameraMode === "EnterFirstPerson" || playerCameraMode === "FirstPerson") {
+      fpGunLogTimer += delta;
+      if (fpGunLogTimer >= 0.5) {
+        fpGunLogTimer = 0;
+        let meshCount = 0;
+        let vertexCount = 0;
+        fpGun.traverse((node) => {
+          if (!(node instanceof THREE.Mesh)) return;
+          meshCount += 1;
+          const pos = node.geometry.getAttribute("position");
+          if (pos) vertexCount += pos.count;
+        });
+        const box = new THREE.Box3().setFromObject(fpGun);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const localCenter = camera.worldToLocal(center.clone());
+        const ndcCenter = center.clone().project(camera);
+        const payload = {
+          mode: playerCameraMode,
+          visible: fpGun.visible,
+          pos: fpGun.position.toArray(),
+          rot: [fpGun.rotation.x, fpGun.rotation.y, fpGun.rotation.z],
+          meshCount,
+          vertexCount,
+          boxCenter: center.toArray(),
+          boxSize: size.toArray(),
+          cameraLocalCenter: localCenter.toArray(),
+          ndcCenter: [ndcCenter.x, ndcCenter.y, ndcCenter.z],
+          centerInFront: localCenter.z < 0,
+          raise: fpWeaponRaise,
+          thetaDisp: fpThetaDisp,
+          vertaDisp: fpVertaDisp,
+        };
+        console.log("[fpGun:frame]", payload);
+        console.log("[fpGun:frame:json]", JSON.stringify(payload));
+      }
+    } else {
+      fpGunLogTimer = 0;
+    }
+    uiStatus.textContent = `mode: ${playerCameraMode} | weapon: ${startingWeaponName}${devFlyEnabled ? " | dev-fly" : ""}${fpGunDetached ? " | fp-gun detached (K)" : ""}`;
 
     updateSnowFrustumVisibility();
     if (snowPoints.visible) {
       snowMat.uniforms.uTime.value += delta;
     }
     updateSunFlare();
+
+    // Two-pass render using layers: scene (layer 0) first, then clear depth
+    // and render FP gun (layer 1) on top so level geometry never occludes it.
+    renderer.autoClear = false;
+    renderer.clear(true, true, true);
+    camera.layers.set(0);
     renderer.render(scene, camera);
+    if (fpGun.visible) {
+      renderer.clearDepth();
+      camera.layers.set(1);
+      const savedBg = scene.background;
+      scene.background = null;
+      renderer.render(scene, camera);
+      scene.background = savedBg;
+    }
+    camera.layers.enableAll();
+    renderer.autoClear = true;
+
     requestAnimationFrame(animate);
   };
   animate();
