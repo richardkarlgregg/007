@@ -482,6 +482,18 @@ async function bootstrap(): Promise<void> {
   let useAtlas = atlasBgMesh !== null;
   let bgMesh: THREE.Object3D = useAtlas ? atlasBgMesh! : flatBgMesh;
   scene.add(bgMesh);
+  const decalMeshes: THREE.Mesh[] = [];
+  const collectDecalMeshes = (node: THREE.Object3D | null): void => {
+    if (!node) return;
+    node.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      if (!obj.name.toLowerCase().includes("secondary")) return;
+      decalMeshes.push(obj);
+    });
+  };
+  collectDecalMeshes(atlasBgMesh);
+  collectDecalMeshes(pbrOverrideGroup);
+  collectDecalMeshes(remasterPlaceholderGroup);
 
   // Track user-requested visibility separately from the visibility we may
   // temporarily clear for remaster mode.  bgMesh itself can be atlasBgMesh,
@@ -516,6 +528,32 @@ async function bootstrap(): Promise<void> {
 
   type LightingMode = "n64" | "remaster";
   let lightingMode: LightingMode | null = null;
+  const decalDebug = {
+    enabled: true,
+    opacity: 1.0,
+    forceOpaque: false,
+  };
+
+  function applyDecalDebugSettings(): void {
+    const alpha = THREE.MathUtils.clamp(decalDebug.opacity, 0.0, 1.0);
+    for (const mesh of decalMeshes) {
+      mesh.visible = decalDebug.enabled;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const mat of mats) {
+        if (mat instanceof THREE.ShaderMaterial) {
+          if (mat.uniforms.uDecalOpacityScale) mat.uniforms.uDecalOpacityScale.value = alpha;
+          if (mat.uniforms.uDecalForceOpaque) mat.uniforms.uDecalForceOpaque.value = decalDebug.forceOpaque ? 1.0 : 0.0;
+          continue;
+        }
+        if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial) {
+          mat.transparent = true;
+          mat.opacity = decalDebug.forceOpaque ? 1.0 : alpha;
+          mat.needsUpdate = true;
+        }
+      }
+    }
+  }
+  applyDecalDebugSettings();
 
   interface RemasterLightingConfig {
     exposure: number;
@@ -1402,6 +1440,9 @@ async function bootstrap(): Promise<void> {
   const lightSnowHazeClose = document.getElementById("light-snow-haze-close") as HTMLInputElement | null;
   const lightFlySpeed = document.getElementById("light-fly-speed") as HTMLInputElement | null;
   const lightFlySensitivity = document.getElementById("light-fly-sensitivity") as HTMLInputElement | null;
+  const lightDecalsEnabled = document.getElementById("light-decals-enabled") as HTMLInputElement | null;
+  const lightDecalsOpacity = document.getElementById("light-decals-opacity") as HTMLInputElement | null;
+  const lightDecalsForceOpaque = document.getElementById("light-decals-force-opaque") as HTMLInputElement | null;
 
   function syncLightingUiFromConfig(): void {
     if (!lightingPanel) return;
@@ -1439,6 +1480,9 @@ async function bootstrap(): Promise<void> {
     if (lightSnowHazeClose) lightSnowHazeClose.value = snowCfg.hazeCloseness.toFixed(2);
     if (lightFlySpeed) lightFlySpeed.value = flyMoveSpeed.toFixed(0);
     if (lightFlySensitivity) lightFlySensitivity.value = flyLookSensitivity.toFixed(4);
+    if (lightDecalsEnabled) lightDecalsEnabled.checked = decalDebug.enabled;
+    if (lightDecalsOpacity) lightDecalsOpacity.value = decalDebug.opacity.toFixed(2);
+    if (lightDecalsForceOpaque) lightDecalsForceOpaque.checked = decalDebug.forceOpaque;
   }
 
   function setupSliderForInput(
@@ -1528,6 +1572,9 @@ async function bootstrap(): Promise<void> {
     snowCfg.hazeCloseness = clamp(num(lightSnowHazeClose, snowCfg.hazeCloseness), 0.0, 2.0);
     flyMoveSpeed = clamp(num(lightFlySpeed, flyMoveSpeed), 40.0, 1400.0);
     flyLookSensitivity = clamp(num(lightFlySensitivity, flyLookSensitivity), 0.0001, 0.01);
+    decalDebug.enabled = Boolean(lightDecalsEnabled?.checked ?? decalDebug.enabled);
+    decalDebug.opacity = clamp(num(lightDecalsOpacity, decalDebug.opacity), 0.0, 1.0);
+    decalDebug.forceOpaque = Boolean(lightDecalsForceOpaque?.checked ?? decalDebug.forceOpaque);
   }
 
   function applyLightingUi(): void {
@@ -1535,6 +1582,7 @@ async function bootstrap(): Promise<void> {
     syncLightingUiFromConfig();
     refreshLightingMode();
     applySnowConfig();
+    applyDecalDebugSettings();
   }
 
   function applyRemasterPreset(presetName: LightingPresetName): void {
@@ -1572,6 +1620,7 @@ async function bootstrap(): Promise<void> {
   setupSliderForInput(lightSnowHazeClose, 0.0, 2.0, 0.01);
   setupSliderForInput(lightFlySpeed, 40.0, 1400.0, 5.0);
   setupSliderForInput(lightFlySensitivity, 0.0001, 0.01, 0.0001);
+  setupSliderForInput(lightDecalsOpacity, 0.0, 1.0, 0.01);
 
   // Character LOD selector
   const chrLodSelect = document.getElementById("chr-lod-level") as HTMLSelectElement | null;
@@ -1588,7 +1637,7 @@ async function bootstrap(): Promise<void> {
     lightShadowBias, lightShadowNormalBias, lightFlareEnabled, lightFlareIntensity, lightShowHelpers,
     lightSnowEnabled, lightSnowIntensity, lightSnowSpeed, lightSnowSize, lightSnowWind,
     lightSnowGravity, lightSnowWindDir, lightSnowDriftRand, lightSnowSizeVar, lightSnowHazeIntensity, lightSnowHazeClose,
-    lightFlySpeed, lightFlySensitivity
+    lightFlySpeed, lightFlySensitivity, lightDecalsEnabled, lightDecalsOpacity, lightDecalsForceOpaque
   ];
   uiInputs.forEach((el) => {
     if (!el) return;

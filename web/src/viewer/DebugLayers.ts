@@ -189,6 +189,8 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
   uniform float uLookupWidth;
   uniform float uAlphaDiscardThreshold;
   uniform float uUseTextureAlpha;
+  uniform float uDecalOpacityScale;
+  uniform float uDecalForceOpaque;
 
   // Fog — controlled directly so the G-key toggle is instant and reliable.
   uniform float uFogNear;
@@ -261,6 +263,11 @@ const ATLAS_FRAGMENT_SHADER = /* glsl */ `
 
     float outAlpha = (uUseTextureAlpha > 0.5) ? tex.a : 1.0;
     outAlpha *= clamp(vLayerAlpha, 0.0, 1.0);
+    if (uDecalForceOpaque > 0.5) {
+      outAlpha = 1.0;
+    } else {
+      outAlpha *= clamp(uDecalOpacityScale, 0.0, 1.0);
+    }
     gl_FragColor = vec4(rgb, outAlpha);
   }
 `;
@@ -307,6 +314,8 @@ export function buildAtlasMaterial(
       uLookupWidth: { value: ATLAS_LOOKUP_WIDTH },
       uAlphaDiscardThreshold: { value: 0.0 },
       uUseTextureAlpha: { value: 0.0 },
+      uDecalOpacityScale: { value: 1.0 },
+      uDecalForceOpaque: { value: 0.0 },
       uFogNear:    fogUniforms.uFogNear,
       uFogFar:     fogUniforms.uFogFar,
       uFogColor:   fogUniforms.uFogColor,
@@ -368,6 +377,8 @@ export function buildBgMeshWithAtlas(
       uLookupWidth: { value: LOOKUP_WIDTH },
       uAlphaDiscardThreshold: { value: 0.5 },
       uUseTextureAlpha: { value: useTextureAlpha ? 1.0 : 0.0 },
+      uDecalOpacityScale: { value: 1.0 },
+      uDecalForceOpaque: { value: 0.0 },
       // Spread fog uniforms by reference so live updates from applyFog() work.
       uFogNear:    fogUniforms.uFogNear,
       uFogFar:     fogUniforms.uFogFar,

@@ -120,6 +120,19 @@
       "height":    "",
       "alpha":     "",
       "heightScale": 0
+    },
+{
+      "name": "coro_metal",
+      "_comment": "Snow metal surface set. Fill in materialIds from poly inspector for runway/ground snow metal polygons.",
+      "materialIds": [693],
+      "albedo":    "coro_metal.png",
+      "normal":    "",
+      "roughness": "",
+      "ao":        "",
+      "metallic":  "",
+      "height":    "",
+      "alpha":     "",
+      "heightScale": 0
     }
   ]
 }
