@@ -397,16 +397,22 @@ async function bootstrap(): Promise<void> {
   }
 
   // Source-accurate hand weapon placement (gun.c copy_item_in_hand):
-  // WeaponStats PosX/PosY/PosZ + D_80053E00 (27.8) vertical lift.
+  // Position is purely WeaponStats PosX/PosY/PosZ — the D_80053E00 (+27.8)
+  // offset is only applied in a special-case branch (weapon state 1, item 17),
+  // NOT for normal FP gun rendering.
   // matrix_scalar_multiply(D_80053E04=0.1) scales the 3×3 rotation submatrix
   // (entries 0-11) but leaves the translation row untouched, so position is
   // NOT divided by the scale factor.
+  // gun.c's matrix_4x4_align orients the gun to face the look direction (-Z
+  // in camera space). The model is authored facing +Z, so we apply a π rotation
+  // around Y to flip it forward.
   const fpWeapon = bondActor.fpWeaponConfig;
   const fpWeaponBase = new THREE.Vector3(
     fpWeapon.posX,
-    fpWeapon.posY + 27.8,
+    fpWeapon.posY,
     fpWeapon.posZ
   );
+  fpGun.rotation.set(0, Math.PI, 0);
   let fpWeaponRaise = 0; // 0 = hidden (-1 hand_invisible), 1 = fully raised
   let fpThetaDisp = 0;
   let fpVertaDisp = 0;
@@ -520,9 +526,10 @@ async function bootstrap(): Promise<void> {
       fpWeaponBase.y + hiddenYOffset + swayY,
       fpWeaponBase.z
     );
+    // Base Y=π (model faces +Z, camera faces -Z) + sway offsets.
     fpGun.rotation.set(
       fpVertaDisp * 0.25,
-      -fpThetaDisp * 0.2,
+      Math.PI + (-fpThetaDisp * 0.2),
       0
     );
   }
