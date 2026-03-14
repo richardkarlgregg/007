@@ -37,8 +37,13 @@ function computeStageBounds(triangles: RoomTriangle[]): Bounds3 {
   return { minX, maxX, minY, maxY, minZ, maxZ };
 }
 
-function fixed16ToFloat(value: number): number {
-  return value / 65536.0;
+function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return 0.5 * ((2 * p1) +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
 }
 
 function selectSpawnPad(stage: StageData): PadRecord | null {
@@ -1237,14 +1242,17 @@ async function bootstrap(): Promise<void> {
   const tmpEye = new THREE.Vector3();
   const tmpLookAt = new THREE.Vector3();
   const tmpCameraQuat = new THREE.Quaternion();
-  const swirlOffset = (() => {
-    const first = stage.intro?.swirlCams?.[0];
-    if (!first) return new THREE.Vector3(0, 38, -84);
-    return new THREE.Vector3(
-      fixed16ToFloat(first.x),
-      fixed16ToFloat(first.y),
-      fixed16ToFloat(first.z)
-    );
+  const swirlCams = stage.intro?.swirlCams ?? [];
+  let swirlCameraIndex = 1;
+  let swirlTimer = 0;
+  let swirlDone = false;
+  const swirlPlayerSinH = (() => {
+    const lxz = Math.sqrt(playerFacing.x ** 2 + playerFacing.z ** 2) || 1;
+    return playerFacing.x / lxz;
+  })();
+  const swirlPlayerCosH = (() => {
+    const lxz = Math.sqrt(playerFacing.x ** 2 + playerFacing.z ** 2) || 1;
+    return playerFacing.z / lxz;
   })();
 
   // ── CAMERAMODE_INTRO ─────────────────────────────────────────────────────
@@ -1296,50 +1304,113 @@ async function bootstrap(): Promise<void> {
   }
 
   // ── CAMERAMODE_SWIRL ─────────────────────────────────────────────────────
-  // Bond becomes visible; orbital camera clip plays.  Reuses the hand-authored
-  // clip on BondIntroActor (yaw, weaponRaise, lean).
+  // Source-accurate keyframe-driven swirl camera (bondview.c CAMERAMODE_SWIRL).
+  // Steps through swirlCams[] by duration, Catmull-Rom interpolates between 4
+  // control points, and optionally rotates offsets by player heading (flags & 2).
   function enterSwirlOrbit(): void {
     playerCameraMode = "SwirlOrbit";
     modeElapsed = 0;
+    swirlCameraIndex = 1;
+    swirlTimer = 0;
+    swirlDone = false;
     bondActor.resetClip();
     bondActor.group.visible = true;
     introGun.visible = true;
     fpGun.visible = false;
-    setFadeAlpha(0.0); // fade in from black
+    setFadeAlpha(0.0);
+    bondActor.eyeAnchor.getWorldPosition(swirlBasePos);
+    bondActor.playIntroAnimation();
   }
+
+  function swirlGetControlPoint(offset: number): { x: number; y: number; z: number } {
+    let idx = swirlCameraIndex + offset;
+    if (idx < 0) idx = 0;
+    if (idx >= swirlCams.length) idx = swirlCams.length - 1;
+    if (offset > 0) {
+      for (let j = swirlCameraIndex; j < idx; j++) {
+        if (j + 1 < swirlCams.length && (swirlCams[j + 1].flags & 1)) {
+          idx = j;
+          break;
+        }
+      }
+    }
+    const kf = swirlCams[idx];
+    if (kf.flags & 2) {
+      return {
+        x: swirlPlayerCosH * kf.x + kf.z * swirlPlayerSinH,
+        y: kf.y,
+        z: kf.z * swirlPlayerCosH - swirlPlayerSinH * kf.x,
+      };
+    }
+    return { x: kf.x, y: kf.y, z: kf.z };
+  }
+
+  // The swirl camera orbits relative to Bond's eye position.  In the native
+  // game, sub_GAME_7F07B2A0 adds offsets to player->field_3c8 (player center
+  // at DEFAULT_C_HALFHEIGHT above ground).  In the web viewer, the Bond model
+  // is scaled by stageScale, so we use the actual eye anchor world position
+  // to keep the orbit centred on Bond regardless of model scale.
+  const swirlBasePos = new THREE.Vector3();
 
   function updateSwirlOrbit(delta: number): void {
     modeElapsed += delta;
-    // Fade in from black over 60 frames.
     const fadeInSec = 1.0;
-    setFadeAlpha(Math.max(0, fadeInSec === 0 ? 0 : 1.0 - modeElapsed / fadeInSec));
+    setFadeAlpha(Math.max(0, 1.0 - modeElapsed / fadeInSec));
 
     const pose = bondActor.tick(delta);
-    bondActor.eyeAnchor.getWorldPosition(introEyeWorld);
-    const eyeWorld = tmpEye.copy(introEyeWorld);
-    eyeWorld.y += THREE.MathUtils.lerp(1.2, 0.0, bondActor.normalizedTime);
-    const t = bondActor.normalizedTime;
-    const orbitYaw = THREE.MathUtils.lerp(-1.95, 0.22, t);
-    const orbitDistance = THREE.MathUtils.lerp(
-      Math.max(95, swirlOffset.length() + 24),
-      14,
-      THREE.MathUtils.smoothstep(t, 0.2, 1.0)
-    );
-    const orbitHeight = THREE.MathUtils.lerp(30 + swirlOffset.y * 0.25, 2.4, t);
+
+    if (swirlCams.length < 4) {
+      bondActor.eyeAnchor.getWorldPosition(introEyeWorld);
+      if (bondActor.normalizedTime >= 0.999) {
+        enterEnterFirstPerson(introEyeWorld);
+      }
+      return;
+    }
+
+    const deltaTicks = delta * 60.0;
+    swirlTimer += deltaTicks;
+
+    while (swirlCameraIndex < swirlCams.length &&
+           swirlCams[swirlCameraIndex].duration > 0 &&
+           swirlCams[swirlCameraIndex].duration <= swirlTimer) {
+      if (swirlCameraIndex + 3 < swirlCams.length &&
+          !(swirlCams[swirlCameraIndex + 3].flags & 1)) {
+        swirlTimer -= swirlCams[swirlCameraIndex].duration;
+        swirlCameraIndex++;
+      } else {
+        swirlTimer = swirlCams[swirlCameraIndex].duration;
+        swirlDone = true;
+        break;
+      }
+    }
+
+    const dur = swirlCams[swirlCameraIndex]?.duration ?? 1;
+    const t = dur > 0 ? Math.min(1.0, swirlTimer / dur) : 0;
+
+    const p0 = swirlGetControlPoint(-1);
+    const p1 = swirlGetControlPoint(0);
+    const p2 = swirlGetControlPoint(1);
+    const p3 = swirlGetControlPoint(2);
+
+    const camOffX = catmullRom(p0.x, p1.x, p2.x, p3.x, t);
+    const camOffY = catmullRom(p0.y, p1.y, p2.y, p3.y, t);
+    const camOffZ = catmullRom(p0.z, p1.z, p2.z, p3.z, t);
+
     camera.position.set(
-      eyeWorld.x + Math.sin(orbitYaw) * orbitDistance,
-      eyeWorld.y + orbitHeight,
-      eyeWorld.z + Math.cos(orbitYaw) * orbitDistance
+      swirlBasePos.x + camOffX,
+      swirlBasePos.y + camOffY,
+      swirlBasePos.z + camOffZ
     );
-    tmpLookAt.copy(eyeWorld);
-    tmpLookAt.y += THREE.MathUtils.lerp(5, 0, t);
+
+    tmpLookAt.copy(swirlBasePos);
     camera.lookAt(tmpLookAt);
     yaw   = camera.rotation.y;
     pitch = camera.rotation.x;
     fpWeaponRaise = pose.weaponRaise;
 
-    if (t >= 0.999) {
-      enterEnterFirstPerson(eyeWorld);
+    if (swirlDone) {
+      bondActor.eyeAnchor.getWorldPosition(introEyeWorld);
+      enterEnterFirstPerson(introEyeWorld);
     }
   }
 
@@ -1347,6 +1418,7 @@ async function bootstrap(): Promise<void> {
   function enterEnterFirstPerson(eyeWorld: THREE.Vector3): void {
     playerCameraMode = "EnterFirstPerson";
     modeElapsed = 0;
+    setFadeAlpha(0.0);
     enterStartPos.copy(camera.position);
     enterStartQuat.copy(camera.quaternion);
     enterTargetPos.copy(eyeWorld);

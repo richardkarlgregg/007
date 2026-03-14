@@ -179,6 +179,8 @@ export interface ModelGraphNode {
   nextId: number | null;
   childId: number | null;
   origin?: Vec3;
+  /** For opcode 0x02 (GROUP) nodes: animation joint index. */
+  jointId?: number;
   controlsNodeId?: number | null;
   affectsNodeId?: number | null;
   leftNodeId?: number | null;
@@ -225,13 +227,13 @@ export interface IntroStartAmmoRecord {
 }
 
 export interface IntroSwirlCamRecord {
-  animSlot: number;
+  flags: number;
   x: number;
   y: number;
   z: number;
   theta: number;
-  verta: number;
   duration: number;
+  padIndex: number;
 }
 
 export interface IntroFixedCamRecord {

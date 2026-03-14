@@ -210,14 +210,15 @@ export function parseSetupIntro(path) {
             continue;
         }
         if (type === "SwirlCam" && ints.length >= 7) {
+            const s32 = (v) => v | 0;
             intro.swirlCams.push({
-                animSlot: ints[0],
-                x: ints[1],
-                y: ints[2],
-                z: ints[3],
-                theta: ints[4],
-                verta: ints[5],
-                duration: ints[6],
+                flags: ints[0],
+                x: s32(ints[1]) / 65536.0,
+                y: s32(ints[2]) / 65536.0,
+                z: s32(ints[3]) / 65536.0,
+                theta: s32(ints[4]) / 65536.0,
+                duration: s32(ints[5]) / 65536.0,
+                padIndex: s32(ints[6]),
             });
             continue;
         }
@@ -243,6 +244,10 @@ export function parseSetupIntro(path) {
         }
         if (type === "Cuff" && ints.length >= 1) {
             intro.cuffFlags = ints[0];
+            continue;
+        }
+        if (type === "Anim" && ints.length >= 1) {
+            intro.animIndex = ints[0];
         }
     }
     return intro;

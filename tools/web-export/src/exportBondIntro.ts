@@ -13,6 +13,14 @@ import {
   type ModelSwitchAnchor,
   type PropModelGeometry,
 } from "./parsePropBinaryModel.js";
+import {
+  decodeAnimationFrames,
+  loadAnimation,
+  loadSkeleton,
+  STAGE_INTRO_ANIM_TABLE,
+  type JointRotation,
+  type SkeletonJoint,
+} from "./parseAnimation.js";
 import { parsePropModelEntries, parseSetupIntro, type SetupIntroData } from "./parseSetup.js";
 
 interface BondIntroAsset {
@@ -72,6 +80,17 @@ interface BondIntroAsset {
       lean: number;
     }>;
   }>;
+  animation?: {
+    name: string;
+    startFrame: number;
+    endFrame: number;
+    speed: number;
+    bitsPerComponent: number;
+    frameCount: number;
+    bytesPerFrame: number;
+    jointCount: number;
+    frames: JointRotation[][];
+  };
 }
 
 function normalizePath(p: string): string {
@@ -362,18 +381,20 @@ const gunStatsPath = path.resolve(repoRoot, "assets/obseg/gun/gunWeaponStats.inc
 const setupRel = "assets/obseg/setup/UsetuprunZ.c";
 const setupPath = path.resolve(repoRoot, setupRel);
 const intro = parseSetupIntro(setupPath);
-const cuff = intro.cuffFlags ?? 3; // 3 = CUFF_SNOW
+const cuff = intro.cuffFlags ?? 3; // 3 = CUFF_BOILER (bondconstants.h)
 const startWeaponId = selectStartingWeaponId(intro);
 const weaponModels = selectWeaponModels(startWeaponId);
 const fpModelBaseName = weaponModels.fpBinName.replace(/^G/i, "").replace(/Z\.bin$/i, "");
 const fpWeaponPose = extractWeaponPoseFromStats(gunStatsPath, fpModelBaseName);
 
 function bondModelForCuff(cuffId: number): { body: string; head: string } {
-  // solo_char_load() mapping for Brosnan folder bond.
-  if (cuffId === 2) return { body: "boilerbond", head: "headbrosnanboiler" }; // CUFF_BOILER
-  if (cuffId === 1) return { body: "timberbond", head: "headbrosnantimber" }; // CUFF_JUNGLE
-  if (cuffId === 3) return { body: "snowbond", head: "headbrosnansnow" }; // CUFF_SNOW
-  return { body: "suitbond", head: "headbrosnansuit" }; // CUFF_BROSNAN / default
+  // bondconstants.h CUFF_TYPES enum → bondview.c solo_char_load() mapping:
+  //   CUFF_BLUE=0, CUFF_BROSNAN=1, CUFF_JUNGLE=2, CUFF_BOILER=3, CUFF_SNOW=4
+  if (cuffId === 1) return { body: "suitbond", head: "headbrosnansuit" };     // CUFF_BROSNAN
+  if (cuffId === 2) return { body: "timberbond", head: "headbrosnantimber" }; // CUFF_JUNGLE
+  if (cuffId === 3) return { body: "boilerbond", head: "headbrosnanboiler" }; // CUFF_BOILER
+  if (cuffId === 4) return { body: "snowbond", head: "headbrosnansnow" };     // CUFF_SNOW
+  return { body: "suitbond", head: "headbrosnansuit" };                       // CUFF_BLUE / default
 }
 
 const selected = bondModelForCuff(cuff);
@@ -411,6 +432,41 @@ const gunIntroEntry = propEntries.find((e) => e.name === weaponModels.introPropN
 if (!gunIntroEntry) throw new Error(`Missing ${weaponModels.introPropName} scale entry in propItemModelFileRecord.inc.c`);
 const gunFpBoundingRadius = extractGunHeaderRadius(gunHeadersPath, fpModelBaseName);
 const gunFpGraph = gunFpGraphRaw;
+
+// ── Animation export ──────────────────────────────────────────────────────
+const animIndex = intro.animIndex ?? 0;
+let animationData: BondIntroAsset["animation"] | undefined;
+try {
+  const animEntry = STAGE_INTRO_ANIM_TABLE[animIndex];
+  if (animEntry) {
+    const skelJoints = loadSkeleton(repoRoot, bodyModelName);
+    if (skelJoints && skelJoints.length > 0) {
+      const { header, entryBuf } = loadAnimation(repoRoot, animEntry.animName);
+      const frames = decodeAnimationFrames(header, entryBuf, skelJoints);
+
+      animationData = {
+        name: animEntry.animName,
+        startFrame: animEntry.startFrame,
+        endFrame: animEntry.endFrame,
+        speed: animEntry.speed,
+        bitsPerComponent: header.bitsPerComponent,
+        frameCount: header.frameCount,
+        bytesPerFrame: header.bytesPerFrame,
+        jointCount: skelJoints.length,
+        frames,
+      };
+      console.log(
+        `Animation: ${animEntry.animName} — ${header.frameCount} frames, ` +
+        `${skelJoints.length} joints, ${header.bitsPerComponent} bits/comp, ` +
+        `start=${animEntry.startFrame} end=${animEntry.endFrame} speed=${animEntry.speed}`,
+      );
+    } else {
+      console.warn("Skeleton not found for " + bodyModelName + " — skipping animation export");
+    }
+  }
+} catch (err) {
+  console.warn("Animation export failed:", err);
+}
 
 const data: BondIntroAsset = {
   intro,
@@ -470,6 +526,7 @@ const data: BondIntroAsset = {
       ],
     },
   ],
+  animation: animationData,
 };
 
 // Collect all materialIds used across body/head graph chunks and legacy models

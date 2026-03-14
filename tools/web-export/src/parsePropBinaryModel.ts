@@ -251,6 +251,8 @@ export interface ModelGraphNode {
   nextId: number | null;
   childId: number | null;
   origin?: { x: number; y: number; z: number };
+  /** For opcode 0x02 (GROUP) nodes: animation joint index from data+0x0C. */
+  jointId?: number;
   controlsNodeId?: number | null;
   affectsNodeId?: number | null;
   leftNodeId?: number | null;
@@ -1436,6 +1438,7 @@ export function parseModelGraph(binPath: string): ModelGraphData | null {
     const nextId = resolveId(nextPtr);
 
     let origin: { x: number; y: number; z: number } | undefined;
+    let animJointId: number | undefined;
     let controlsNodeId: number | null = null;
     let affectsNodeId: number | null = null;
     let leftNodeId: number | null = null;
@@ -1450,6 +1453,9 @@ export function parseModelGraph(binPath: string): ModelGraphData | null {
             y: readF32BE(binary, dataOff + 0x04),
             z: readF32BE(binary, dataOff + 0x08),
           };
+        }
+        if (opcode === 0x02 && dataOff + 0x0e <= binary.length) {
+          animJointId = readU16BE(binary, dataOff + 0x0c);
         }
       } else if (opcode === 0x08 && dataOff + 0x0c <= binary.length) {
         // LOD: effective child comes from rodata->Affects
@@ -1477,6 +1483,7 @@ export function parseModelGraph(binPath: string): ModelGraphData | null {
       nextId,
       childId,
       origin,
+      jointId: animJointId,
       controlsNodeId,
       affectsNodeId,
       leftNodeId: leftNodeId ?? undefined,
@@ -1845,4 +1852,69 @@ export function parseModelSwitchAnchors(filePath: string): ModelSwitchAnchor[] {
     });
   }
   return anchors;
+}
+
+// ─── Skeleton parsing ─────────────────────────────────────────────────────────
+
+export interface ModelSkeletonJoint {
+  nodeType: number;
+  mtxA: number;
+  mtxB: number;
+}
+
+export interface ModelSkeletonData {
+  numjoints: number;
+  joints: ModelSkeletonJoint[];
+}
+
+/**
+ * Parse the ModelSkeleton from a chr model binary.
+ *
+ * Binary layout for chr models:
+ *   binary[0x00] → seg-5 pointer to ModelFileHeader
+ *   ModelFileHeader+0x00 → RootNode*
+ *   ModelFileHeader+0x04 → Skeleton*
+ *
+ * ModelSkeleton:
+ *   +0x00  s16 numjoints
+ *   +0x02  s16 pad
+ *   +0x04  ModelJoint* Joints
+ *
+ * ModelJoint (6 bytes each):
+ *   +0x00  u16 NodeType
+ *   +0x02  u16 mtxA
+ *   +0x04  u16 mtxB  — bit-position index for animation decoding
+ */
+export function parseModelSkeleton(filePath: string): ModelSkeletonData | null {
+  if (!existsSync(filePath)) return null;
+  const binary = loadPropBinary(filePath);
+  if (!binary || binary.length < 0x10) return null;
+
+  const headerPtr = readU32BE(binary, 0x00);
+  const headerOff = ptrToOffset(headerPtr, binary.length);
+  if (headerOff === null || headerOff + 0x08 > binary.length) return null;
+
+  const skelPtr = readU32BE(binary, headerOff + 0x04);
+  const skelOff = ptrToOffset(skelPtr, binary.length);
+  if (skelOff === null || skelOff + 0x08 > binary.length) return null;
+
+  const numjoints = readI16BE(binary, skelOff + 0x00);
+  if (numjoints <= 0 || numjoints > 256) return null;
+
+  const jointsPtr = readU32BE(binary, skelOff + 0x04);
+  const jointsOff = ptrToOffset(jointsPtr, binary.length);
+  if (jointsOff === null) return null;
+
+  const joints: ModelSkeletonJoint[] = [];
+  for (let i = 0; i < numjoints; i++) {
+    const off = jointsOff + i * 6;
+    if (off + 6 > binary.length) break;
+    joints.push({
+      nodeType: readU16BE(binary, off + 0),
+      mtxA: readU16BE(binary, off + 2),
+      mtxB: readU16BE(binary, off + 4),
+    });
+  }
+
+  return { numjoints, joints };
 }

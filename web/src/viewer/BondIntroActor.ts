@@ -1,3 +1,39 @@
+/**
+ * BondIntroActor — manages Bond's character model and pose during the intro sequence.
+ *
+ * ## Skeletal Animation — Future Work
+ *
+ * The current implementation uses a hand-authored pose clip (BondClipKeyframe)
+ * with yaw/lean/weaponRaise values.  GoldenEye's native intro plays a full
+ * skeletal animation on Bond's model.  To achieve source parity, the following
+ * would need to be built:
+ *
+ * 1. **Animation data parser** — Reverse-engineer the N64 `ModelAnimation`
+ *    format.  Each animation has a header (`unk0E` = frame size) followed by
+ *    packed per-joint transforms (rotation + translation) per frame.  The data
+ *    lives in the ROM animation table (`ptr_animation_table`).
+ *
+ * 2. **Animation exporter** — Extract frames from the ROM animation table,
+ *    referenced by `stage_intro_anim_table[g_IntroAnimationIndex]` which gives
+ *    {animation pointer, start frame, end frame, speed}.  Export as JSON
+ *    per-joint keyframes.
+ *
+ * 3. **Skeleton / joint system** — The character node graph already defines a
+ *    hierarchy (parent-child joints).  Need to apply per-joint rotation/translation
+ *    transforms from the animation data to each node's local matrix each frame.
+ *    Native functions: `modelSetAnimation`, `bheadAdjustAnimation`, `bheadUpdate`.
+ *
+ * 4. **Setup parsing** — Add `INTROTYPE_ANIM` handling to `parseSetupIntro` to
+ *    export the animation index.  The setup record is:
+ *    `_mkword(0, _mkshort(0, 4)), <anim_index>`.
+ *
+ * Native reference files:
+ * - `src/game/bondview.c` — `CAMERAMODE_SWIRL` block loads animation
+ * - `src/game/bondtypes.h` — `ModelAnimation` struct definition
+ * - `src/game/model.c` — `modelSetAnimation`, `loadAnimationFrame`
+ * - `src/game/chr_b.c` — `bheadAdjustAnimation`, `bheadUpdate`
+ * - `notes/GE Documentation/.../21990 index extension.txt` — animation format notes
+ */
 import * as THREE from "three";
 import type { AtlasManifest, ModelGraphData, ModelGraphNode, PropModelGeometry } from "./StageLoader";
 import { buildAtlasMaterial, buildPropGeometry, type FogUniforms } from "./DebugLayers";
@@ -17,8 +53,9 @@ interface BondClip {
 
 /** Minimal mirror of IntroSwirlCamRecord from parseSetup.ts */
 interface IntroSwirlCamRecord {
+  flags: number;
   x: number; y: number; z: number;
-  theta: number; verta: number; duration: number;
+  theta: number; duration: number; padIndex: number;
 }
 
 /** Minimal mirror of IntroFixedCamRecord from parseSetup.ts */
@@ -98,6 +135,17 @@ interface BondIntroAsset {
     gunFp?: ModelGraphData;
   };
   clips: BondClip[];
+  animation?: {
+    name: string;
+    startFrame: number;
+    endFrame: number;
+    speed: number;
+    bitsPerComponent: number;
+    frameCount: number;
+    bytesPerFrame: number;
+    jointCount: number;
+    frames: Array<Array<{ rx: number; ry: number; rz: number }>>;
+  };
 }
 
 export interface BondPoseSample {
@@ -133,6 +181,14 @@ export class BondIntroActor {
   private bodyGraphRuntime: GraphRuntime | null = null;
   private headGraphRuntime: GraphRuntime | null = null;
   private lodLevel = 0;
+
+  // Skeletal animation state
+  private animPlaying = false;
+  private animCurrentFrame = 0;
+  private animStartFrame = 0;
+  private animEndFrame = -1;
+  private animSpeed = 0.02;
+  private jointIdToObject = new Map<number, THREE.Object3D>();
 
   setLodLevel(level: number): void {
     this.lodLevel = level;
@@ -180,6 +236,7 @@ export class BondIntroActor {
         }
       }
       applyGraphRelations(this.bodyGraphRuntime, this.lodLevel);
+      this.buildJointIdMap();
     } else {
       const bodyMesh = meshFromPropModel(
         asset.models.body,
@@ -247,6 +304,9 @@ export class BondIntroActor {
     const pose = sampleClip(this.clip, this.elapsed);
     this.bodyPivot.rotation.y = pose.yawRad;
     this.bodyPivot.rotation.z = pose.lean;
+    if (this.animPlaying) {
+      this.tickAnimation(deltaSec);
+    }
     if (this.bodyGraphRuntime) {
       applyGraphRelations(this.bodyGraphRuntime, this.lodLevel);
     }
@@ -255,6 +315,111 @@ export class BondIntroActor {
 
   get normalizedTime(): number {
     return this.elapsed / this.clipDuration;
+  }
+
+  /**
+   * Build a map from skeleton jointId to the corresponding THREE.Object3D
+   * in the body graph runtime. Uses the `jointId` field added to ModelGraphNode
+   * for opcode 0x02 (GROUP) nodes.
+   */
+  private buildJointIdMap(): void {
+    this.jointIdToObject.clear();
+    if (!this.bodyGraphRuntime || !this.asset.graph?.body) return;
+    for (const node of this.asset.graph.body.nodes) {
+      if (node.jointId !== undefined && node.jointId !== null) {
+        const runtimeNode = this.bodyGraphRuntime.nodesById.get(node.id);
+        if (runtimeNode) {
+          this.jointIdToObject.set(node.jointId, runtimeNode.object);
+        }
+      }
+    }
+  }
+
+  /**
+   * Start playing the skeletal animation.
+   * Parameters come from the exported animation data (matching stage_intro_anim_table).
+   */
+  playAnimation(startFrame: number, endFrame: number, speed: number): void {
+    const anim = this.asset.animation;
+    if (!anim || this.jointIdToObject.size === 0) return;
+    this.animPlaying = true;
+    this.animStartFrame = startFrame;
+    this.animEndFrame = endFrame < 0 ? anim.frameCount - 1 : endFrame;
+    this.animSpeed = speed;
+    this.animCurrentFrame = startFrame;
+    this.applyAnimationFrame(startFrame);
+  }
+
+  /** Stop animation playback. */
+  stopAnimation(): void {
+    this.animPlaying = false;
+  }
+
+  /**
+   * Start the intro animation using the parameters embedded in the asset data
+   * (from stage_intro_anim_table). No-op if no animation data is available.
+   */
+  playIntroAnimation(): void {
+    const anim = this.asset.animation;
+    if (!anim) return;
+    this.playAnimation(anim.startFrame, anim.endFrame, anim.speed);
+  }
+
+  /** Returns true if skeletal animation data is available and can be played. */
+  get hasAnimation(): boolean {
+    return !!this.asset.animation && this.jointIdToObject.size > 0;
+  }
+
+  /**
+   * Advance the skeletal animation by deltaSec and apply interpolated joint rotations.
+   * Native speed unit: modelTickAnimQuarterSpeed advances by speed/4 per game tick (60fps).
+   * So effective frame advance per second = speed * 60 / 4 = speed * 15.
+   */
+  tickAnimation(deltaSec: number): void {
+    const anim = this.asset.animation;
+    if (!anim || !this.animPlaying) return;
+
+    this.animCurrentFrame += this.animSpeed * 15.0 * deltaSec;
+    if (this.animCurrentFrame >= this.animEndFrame) {
+      this.animCurrentFrame = this.animEndFrame;
+      this.animPlaying = false;
+    }
+
+    this.applyAnimationFrame(this.animCurrentFrame);
+  }
+
+  /**
+   * Apply a (potentially fractional) animation frame to the joint hierarchy.
+   * Interpolates between two adjacent frames for smooth playback.
+   */
+  private applyAnimationFrame(frame: number): void {
+    const anim = this.asset.animation;
+    if (!anim) return;
+
+    const maxFrame = anim.frameCount - 1;
+    const clamped = Math.max(0, Math.min(frame, maxFrame));
+    const frameA = Math.floor(clamped);
+    const frameB = Math.min(frameA + 1, maxFrame);
+    const blend = clamped - frameA;
+
+    const framesData = anim.frames;
+    if (!framesData[frameA] || !framesData[frameB]) return;
+
+    // The skeleton joints array maps skeleton index → (nodeType, mtxA, mtxB).
+    // The model graph nodes have jointId = skeleton index.
+    // frames[f][skeletonJointIndex] = { rx, ry, rz } in radians.
+    for (const [jointId, object] of this.jointIdToObject) {
+      if (jointId < 0 || jointId >= anim.jointCount) continue;
+      const a = framesData[frameA][jointId];
+      const b = framesData[frameB][jointId];
+      if (!a || !b) continue;
+
+      const rx = a.rx + (b.rx - a.rx) * blend;
+      const ry = a.ry + (b.ry - a.ry) * blend;
+      const rz = a.rz + (b.rz - a.rz) * blend;
+
+      object.rotation.set(rx, ry, rz, "XYZ");
+    }
   }
 
   createIntroGunMesh(): THREE.Mesh {
