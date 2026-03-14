@@ -200,6 +200,12 @@ async function bootstrap(): Promise<void> {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   root.appendChild(renderer.domElement);
 
+  const sideMenu = document.getElementById("side-menu");
+  const sideMenuToggle = document.getElementById("side-menu-toggle");
+  sideMenuToggle?.addEventListener("click", () => {
+    sideMenu?.classList.toggle("collapsed");
+  });
+
   // ── Pointer-lock free-fly ────────────────────────────────────────────────
   let flyMode = false;
   const flyOverlay = document.getElementById("fly-overlay");
@@ -1587,6 +1593,48 @@ async function bootstrap(): Promise<void> {
 
   // Lighting panel controls
   const lightingPanel = document.getElementById("lighting-panel");
+  const togglePropPanelBtn = document.getElementById("toggle-prop-panel") as HTMLButtonElement | null;
+  const toggleLightingPanelBtn = document.getElementById("toggle-lighting-panel") as HTMLButtonElement | null;
+  const polyPickerToggleBtn = document.getElementById("poly-picker-toggle") as HTMLButtonElement | null;
+  let polygonPickerEnabled = false;
+
+  function refreshSidebarButtonState(): void {
+    const propsVisible = !propTypePanel?.classList.contains("hidden");
+    const lightingVisible = !lightingPanel?.classList.contains("hidden");
+    togglePropPanelBtn?.classList.toggle("active", Boolean(propsVisible));
+    toggleLightingPanelBtn?.classList.toggle("active", Boolean(lightingVisible));
+    polyPickerToggleBtn?.classList.toggle("active", polygonPickerEnabled);
+    if (polyPickerToggleBtn) {
+      polyPickerToggleBtn.textContent = polygonPickerEnabled ? "⌖ Picker On" : "⌖ Picker Off";
+    }
+  }
+
+  function setPolygonPickerEnabled(enabled: boolean): void {
+    polygonPickerEnabled = enabled;
+    refreshSidebarButtonState();
+  }
+
+  function togglePropTypePanel(): void {
+    propTypePanel?.classList.toggle("hidden");
+    refreshSidebarButtonState();
+  }
+
+  function toggleLightingPanel(): void {
+    lightingPanel?.classList.toggle("hidden");
+    refreshSidebarButtonState();
+  }
+
+  togglePropPanelBtn?.addEventListener("click", () => {
+    togglePropTypePanel();
+  });
+  toggleLightingPanelBtn?.addEventListener("click", () => {
+    toggleLightingPanel();
+  });
+  polyPickerToggleBtn?.addEventListener("click", () => {
+    setPolygonPickerEnabled(!polygonPickerEnabled);
+  });
+  refreshSidebarButtonState();
+
   const lightPreset = document.getElementById("light-preset") as HTMLSelectElement | null;
   const lightApplyPreset = document.getElementById("light-apply-preset") as HTMLButtonElement | null;
   const lightExposure = document.getElementById("light-exposure") as HTMLInputElement | null;
@@ -1906,6 +1954,34 @@ async function bootstrap(): Promise<void> {
   renderer.domElement.addEventListener("click", (event) => {
     // Skip intro on click.
     trySkipIntro();
+    // Polygon inspector runs only in explicit picker mode.
+    if (polygonPickerEnabled) {
+      if (document.pointerLockElement === renderer.domElement) return;
+      if (!bgVisible) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointerNdc, camera);
+
+      const candidates: THREE.Object3D[] = [bgMesh];
+      if (pbrOverrideGroup?.visible) candidates.push(pbrOverrideGroup);
+      if (remasterPlaceholderGroup?.visible) candidates.push(remasterPlaceholderGroup);
+      const hits = candidates
+        .flatMap((obj) => raycaster.intersectObject(obj, true))
+        .sort((a, b) => a.distance - b.distance);
+      const hit = hits.find((h) => h.object instanceof THREE.Mesh && Array.isArray((h.object as THREE.Mesh).userData.triangleIds));
+      if (!hit || hit.faceIndex === undefined) return;
+      const mesh = hit.object as THREE.Mesh;
+      const triangleIds = mesh.userData.triangleIds as number[] | undefined;
+      if (!triangleIds) return;
+      const triId = triangleIds[hit.faceIndex];
+      if (triId === undefined) return;
+      const tri = stage.roomTriangles[triId];
+      if (!tri) return;
+      renderPolygonPopup(triId, tri);
+      return;
+    }
+
     // When not in fly mode, left-click on canvas requests pointer lock (enters fly).
     // The click that triggers pointer lock is consumed here; subsequent clicks
     // while locked are ignored so we don't accidentally fire the inspector.
@@ -1915,32 +1991,6 @@ async function bootstrap(): Promise<void> {
     } else {
       return; // pointer is locked — ignore clicks inside fly mode
     }
-    if (!bgVisible) return;
-    const rect = renderer.domElement.getBoundingClientRect();
-    pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(pointerNdc, camera);
-
-    // Check both the main bg mesh and any visible PBR override geometry.
-    const candidates: THREE.Object3D[] = [bgMesh];
-    if (pbrOverrideGroup?.visible) candidates.push(pbrOverrideGroup);
-    if (remasterPlaceholderGroup?.visible) candidates.push(remasterPlaceholderGroup);
-    const hits = candidates
-      .flatMap((obj) => raycaster.intersectObject(obj, true))
-      .sort((a, b) => a.distance - b.distance);
-    const hit = hits.find((h) => h.object instanceof THREE.Mesh && Array.isArray((h.object as THREE.Mesh).userData.triangleIds));
-    if (!hit || hit.faceIndex === undefined) {
-      return;
-    }
-
-    const mesh = hit.object as THREE.Mesh;
-    const triangleIds = mesh.userData.triangleIds as number[] | undefined;
-    if (!triangleIds) return;
-    const triId = triangleIds[hit.faceIndex];
-    if (triId === undefined) return;
-    const tri = stage.roomTriangles[triId];
-    if (!tri) return;
-    renderPolygonPopup(triId, tri);
   });
 
   window.addEventListener("keydown", (event) => {
@@ -1992,7 +2042,7 @@ async function bootstrap(): Promise<void> {
     } else if (event.key === "0") {
       if (propsLayer) propsLayer.visible = !propsLayer.visible;
     } else if (event.key === "p" || event.key === "P") {
-      propTypePanel?.classList.toggle("hidden");
+      togglePropTypePanel();
     } else if (event.key === "7") {
       toggleAtlasViewer();
     } else if (event.key === "8") {
@@ -2023,7 +2073,7 @@ async function bootstrap(): Promise<void> {
       fogMode = fogMode === "hazy" ? "gameplay" : fogMode === "gameplay" ? "off" : "hazy";
       applyFog();
     } else if (event.key === "l" || event.key === "L") {
-      lightingPanel?.classList.toggle("hidden");
+      toggleLightingPanel();
     } else if (event.key === "h" || event.key === "H") {
       remasterLighting.showHelpers = !remasterLighting.showHelpers;
       if (lightShowHelpers) lightShowHelpers.checked = remasterLighting.showHelpers;
@@ -2041,12 +2091,17 @@ async function bootstrap(): Promise<void> {
       setFlyMode(devFlyEnabled && document.pointerLockElement === renderer.domElement);
     } else if (event.key === "k" || event.key === "K") {
       setFpGunDetached(!fpGunDetached);
+    } else if (event.key === "i" || event.key === "I") {
+      setPolygonPickerEnabled(!polygonPickerEnabled);
     } else if (event.key === "Escape") {
       if (flyMode) {
         document.exitPointerLock();
       } else {
         hidePolygonPopup();
         lightingPanel?.classList.add("hidden");
+        propTypePanel?.classList.add("hidden");
+        setPolygonPickerEnabled(false);
+        refreshSidebarButtonState();
       }
     }
   });

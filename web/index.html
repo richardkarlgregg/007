@@ -18,10 +18,43 @@
         color: #e8eefc;
       }
 
-      .hud {
+      #side-menu {
         position: fixed;
         top: 12px;
         left: 12px;
+        z-index: 200;
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        pointer-events: none;
+      }
+      #side-menu-toggle {
+        pointer-events: auto;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        border: 1px solid rgba(140, 170, 230, 0.32);
+        background: rgba(8, 11, 18, 0.9);
+        color: #d8e7ff;
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      #side-menu-body {
+        pointer-events: auto;
+        width: 360px;
+        max-height: calc(100vh - 24px);
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      #side-menu.collapsed #side-menu-body {
+        display: none;
+      }
+
+      .hud {
+        position: static;
         padding: 10px 12px 9px;
         background: rgba(5, 8, 14, 0.72);
         border: 1px solid rgba(140, 170, 230, 0.25);
@@ -30,7 +63,7 @@
         line-height: 1.35;
         user-select: none;
         pointer-events: auto;
-        max-width: 320px;
+        max-width: none;
       }
       .hud-title {
         font-size: 12px;
@@ -56,13 +89,31 @@
         margin: 6px 0;
         border-top: 1px solid rgba(255, 255, 255, 0.12);
       }
+      .hud-actions {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      .hud-actions button {
+        width: 100%;
+        background: rgba(255,255,255,0.06);
+        color: #d7e2f8;
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 6px;
+        font-size: 11px;
+        padding: 4px 6px;
+        cursor: pointer;
+      }
+      .hud-actions button.active {
+        background: rgba(87, 137, 255, 0.28);
+        border-color: rgba(132, 176, 255, 0.6);
+        color: #eef5ff;
+      }
 
       #prop-type-panel {
-        position: fixed;
-        top: 12px;
-        left: 348px;
-        z-index: 140;
-        width: 280px;
+        position: static;
+        width: 100%;
         max-height: 58vh;
         overflow: auto;
         border-radius: 10px;
@@ -290,13 +341,10 @@
       }
 
       #lighting-panel {
-        position: fixed;
-        left: 12px;
-        bottom: 12px;
-        width: 340px;
+        position: static;
+        width: 100%;
         max-height: 62vh;
         overflow: auto;
-        z-index: 130;
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.2);
         background: rgba(8, 11, 18, 0.92);
@@ -363,41 +411,136 @@
   </head>
   <body>
     <div id="app"></div>
-    <div class="hud" id="hud">
-      <div class="hud-title">GoldenEye Runway Viewer</div>
-      <div class="hud-grid">
-        <span class="hud-key">WASD / Arrows</span><span class="hud-val">fly camera</span>
-        <span class="hud-key">F / Click</span><span class="hud-val">enter fly mode</span>
-        <span class="hud-key">Esc</span><span class="hud-val">exit fly / close popups</span>
-      </div>
-      <div class="hud-sep"></div>
-      <div class="hud-grid">
-        <span class="hud-key">1</span><span class="hud-val">bg mesh</span>
-        <span class="hud-key">2</span><span class="hud-val">stan polygons</span>
-        <span class="hud-key">3</span><span class="hud-val">pads</span>
-        <span class="hud-key">4</span><span class="hud-val">portals</span>
-        <span class="hud-key">0</span><span class="hud-val">props layer</span>
-        <span class="hud-key">P</span><span class="hud-val">prop type filters</span>
-      </div>
-      <div class="hud-sep"></div>
-      <div class="hud-grid">
-        <span class="hud-key">5</span><span class="hud-val">wireframe</span>
-        <span class="hud-key">6</span><span class="hud-val">grid</span>
-        <span class="hud-key">7</span><span class="hud-val">atlas viewer</span>
-        <span class="hud-key">8</span><span class="hud-val">textures / flat</span>
-        <span class="hud-key">9</span><span class="hud-val">room labels</span>
-        <span class="hud-key">R</span><span class="hud-val">remaster PBR</span>
-        <span class="hud-key">G</span><span class="hud-val">fog mode</span>
-        <span class="hud-key">L</span><span class="hud-val">lighting panel</span>
-        <span class="hud-key">N</span><span class="hud-val">snow on/off</span>
-        <span class="hud-key">H</span><span class="hud-val">light helpers</span>
-      </div>
-      <span id="fly-hint"></span>
-    </div>
+    <div id="side-menu" class="collapsed">
+      <button id="side-menu-toggle" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button>
+      <div id="side-menu-body">
+        <div class="hud" id="hud">
+          <div class="hud-title">GoldenEye Runway Viewer</div>
+          <div class="hud-actions">
+            <button id="toggle-prop-panel" type="button">Prop Filters</button>
+            <button id="toggle-lighting-panel" type="button">Lighting</button>
+            <button id="poly-picker-toggle" type="button" title="Enable polygon picker mode">⌖ Picker Off</button>
+          </div>
+          <div class="hud-grid">
+            <span class="hud-key">WASD / Arrows</span><span class="hud-val">fly camera</span>
+            <span class="hud-key">F / Click</span><span class="hud-val">enter fly mode</span>
+            <span class="hud-key">Esc</span><span class="hud-val">exit fly / close popups</span>
+          </div>
+          <div class="hud-sep"></div>
+          <div class="hud-grid">
+            <span class="hud-key">1</span><span class="hud-val">bg mesh</span>
+            <span class="hud-key">2</span><span class="hud-val">stan polygons</span>
+            <span class="hud-key">3</span><span class="hud-val">pads</span>
+            <span class="hud-key">4</span><span class="hud-val">portals</span>
+            <span class="hud-key">0</span><span class="hud-val">props layer</span>
+            <span class="hud-key">P</span><span class="hud-val">prop type filters</span>
+          </div>
+          <div class="hud-sep"></div>
+          <div class="hud-grid">
+            <span class="hud-key">5</span><span class="hud-val">wireframe</span>
+            <span class="hud-key">6</span><span class="hud-val">grid</span>
+            <span class="hud-key">7</span><span class="hud-val">atlas viewer</span>
+            <span class="hud-key">8</span><span class="hud-val">textures / flat</span>
+            <span class="hud-key">9</span><span class="hud-val">room labels</span>
+            <span class="hud-key">R</span><span class="hud-val">remaster PBR</span>
+            <span class="hud-key">G</span><span class="hud-val">fog mode</span>
+            <span class="hud-key">L</span><span class="hud-val">lighting panel</span>
+            <span class="hud-key">N</span><span class="hud-val">snow on/off</span>
+            <span class="hud-key">H</span><span class="hud-val">light helpers</span>
+            <span class="hud-key">I</span><span class="hud-val">polygon picker mode</span>
+          </div>
+          <span id="fly-hint"></span>
+        </div>
 
-    <div id="prop-type-panel" class="hidden">
-      <h3>Prop Type Filters</h3>
-      <div id="prop-type-list"></div>
+        <div id="prop-type-panel" class="hidden">
+          <h3>Prop Type Filters</h3>
+          <div id="prop-type-list"></div>
+        </div>
+
+        <div id="lighting-panel" class="hidden">
+          <h3>Remaster Lighting</h3>
+
+          <div class="light-row">
+            <label for="light-preset">preset</label>
+            <select id="light-preset">
+              <option value="midday">midday sun</option>
+              <option value="dawn">dawn warm</option>
+              <option value="overcast">overcast soft</option>
+            </select>
+          </div>
+          <div class="light-row">
+            <label>apply preset</label>
+            <button id="light-apply-preset">apply</button>
+          </div>
+
+          <div class="light-subhead">Character</div>
+          <div class="light-row">
+            <label for="chr-lod-level">LOD level</label>
+            <select id="chr-lod-level">
+              <option value="0" selected>0 — Highest Quality</option>
+              <option value="1">1 — Lower Quality</option>
+              <option value="-1">All Levels</option>
+            </select>
+          </div>
+
+          <div class="light-subhead">Fly Camera</div>
+          <div class="light-row"><label for="light-fly-speed">fly move speed</label><input id="light-fly-speed" type="number" step="1" /></div>
+          <div class="light-row"><label for="light-fly-sensitivity">fly look sensitivity</label><input id="light-fly-sensitivity" type="number" step="0.0001" /></div>
+
+          <div class="light-subhead">Decal Debug</div>
+          <div class="light-row"><label for="light-decals-enabled">show decals</label><input id="light-decals-enabled" type="checkbox" /></div>
+          <div class="light-row"><label for="light-decals-opacity">decal opacity</label><input id="light-decals-opacity" type="number" step="0.01" /></div>
+          <div class="light-row"><label for="light-decals-force-opaque">force full opacity</label><input id="light-decals-force-opaque" type="checkbox" /></div>
+
+          <div class="light-subhead">Tone + Intensities</div>
+          <div class="light-row"><label for="light-exposure">exposure</label><input id="light-exposure" type="number" step="0.01" /></div>
+          <div class="light-row"><label for="light-hemi">hemi intensity</label><input id="light-hemi" type="number" step="0.05" /></div>
+          <div class="light-row"><label for="light-sun-intensity">sun intensity</label><input id="light-sun-intensity" type="number" step="0.05" /></div>
+          <div class="light-row"><label for="light-fill">fill intensity</label><input id="light-fill" type="number" step="0.05" /></div>
+          <div class="light-row"><label for="light-ambient">ambient intensity</label><input id="light-ambient" type="number" step="0.05" /></div>
+          <div class="light-row"><label for="light-flare-enabled">sun flare</label><input id="light-flare-enabled" type="checkbox" /></div>
+          <div class="light-row"><label for="light-flare-intensity">flare intensity</label><input id="light-flare-intensity" type="number" step="0.05" /></div>
+
+          <div class="light-subhead">Snow FX</div>
+          <div class="light-row"><label for="light-snow-enabled">enable snow</label><input id="light-snow-enabled" type="checkbox" /></div>
+          <div class="light-row"><label for="light-snow-intensity">intensity (particle x)</label><input id="light-snow-intensity" type="number" step="1" /></div>
+          <div class="light-row"><label for="light-snow-speed">fall speed</label><input id="light-snow-speed" type="number" step="1" /></div>
+          <div class="light-row"><label for="light-snow-gravity">gravity</label><input id="light-snow-gravity" type="number" step="0.1" /></div>
+          <div class="light-row"><label for="light-snow-size">flake size</label><input id="light-snow-size" type="number" step="0.1" /></div>
+          <div class="light-row"><label for="light-snow-wind">wind drift</label><input id="light-snow-wind" type="number" step="0.1" /></div>
+          <div class="light-row"><label for="light-snow-wind-dir">wind direction deg</label><input id="light-snow-wind-dir" type="number" step="1" /></div>
+          <div class="light-row"><label for="light-snow-drift-rand">drift randomness</label><input id="light-snow-drift-rand" type="number" step="0.01" /></div>
+          <div class="light-row"><label for="light-snow-size-var">size variation</label><input id="light-snow-size-var" type="number" step="0.01" /></div>
+          <div class="light-row"><label for="light-snow-haze-intensity">haze intensity</label><input id="light-snow-haze-intensity" type="number" step="0.01" /></div>
+          <div class="light-row"><label for="light-snow-haze-close">haze closeness</label><input id="light-snow-haze-close" type="number" step="0.01" /></div>
+
+          <div class="light-subhead">Sun Position</div>
+          <div class="light-row"><label for="light-sun-azimuth">sun azimuth deg</label><input id="light-sun-azimuth" type="number" step="1" /></div>
+          <div class="light-row"><label for="light-sun-elevation">sun elevation deg</label><input id="light-sun-elevation" type="number" step="1" /></div>
+          <div class="light-row"><label for="light-sun-distance">sun distance</label><input id="light-sun-distance" type="number" step="10" /></div>
+          <div class="light-row"><label for="light-target-x">target x</label><input id="light-target-x" type="number" step="10" /></div>
+          <div class="light-row"><label for="light-target-y">target y</label><input id="light-target-y" type="number" step="10" /></div>
+          <div class="light-row"><label for="light-target-z">target z</label><input id="light-target-z" type="number" step="10" /></div>
+
+          <div class="light-subhead">Shadows</div>
+          <div class="light-row"><label for="light-shadows-enabled">enable shadows</label><input id="light-shadows-enabled" type="checkbox" /></div>
+          <div class="light-row">
+            <label for="light-shadow-size">shadow map size</label>
+            <select id="light-shadow-size">
+              <option value="512">512</option>
+              <option value="1024">1024</option>
+              <option value="2048">2048</option>
+              <option value="4096">4096</option>
+            </select>
+          </div>
+          <div class="light-row"><label for="light-shadow-radius">shadow radius</label><input id="light-shadow-radius" type="number" step="10" /></div>
+          <div class="light-row"><label for="light-shadow-near">shadow near</label><input id="light-shadow-near" type="number" step="1" /></div>
+          <div class="light-row"><label for="light-shadow-far">shadow far</label><input id="light-shadow-far" type="number" step="10" /></div>
+          <div class="light-row"><label for="light-shadow-bias">shadow bias</label><input id="light-shadow-bias" type="number" step="0.00005" /></div>
+          <div class="light-row"><label for="light-shadow-normal-bias">shadow normalBias</label><input id="light-shadow-normal-bias" type="number" step="0.01" /></div>
+          <div class="light-row"><label for="light-show-helpers">show helpers</label><input id="light-show-helpers" type="checkbox" /></div>
+        </div>
+      </div>
     </div>
 
     <!-- Fly-mode entry overlay — hidden while pointer is locked -->
@@ -434,89 +577,6 @@
       <div class="poly-hint">Click triangle to update · Esc to hide</div>
     </div>
 
-    <div id="lighting-panel" class="hidden">
-      <h3>Remaster Lighting</h3>
-
-      <div class="light-row">
-        <label for="light-preset">preset</label>
-        <select id="light-preset">
-          <option value="midday">midday sun</option>
-          <option value="dawn">dawn warm</option>
-          <option value="overcast">overcast soft</option>
-        </select>
-      </div>
-      <div class="light-row">
-        <label>apply preset</label>
-        <button id="light-apply-preset">apply</button>
-      </div>
-
-      <div class="light-subhead">Character</div>
-      <div class="light-row">
-        <label for="chr-lod-level">LOD level</label>
-        <select id="chr-lod-level">
-          <option value="0" selected>0 — Highest Quality</option>
-          <option value="1">1 — Lower Quality</option>
-          <option value="-1">All Levels</option>
-        </select>
-      </div>
-
-      <div class="light-subhead">Fly Camera</div>
-      <div class="light-row"><label for="light-fly-speed">fly move speed</label><input id="light-fly-speed" type="number" step="1" /></div>
-      <div class="light-row"><label for="light-fly-sensitivity">fly look sensitivity</label><input id="light-fly-sensitivity" type="number" step="0.0001" /></div>
-
-      <div class="light-subhead">Decal Debug</div>
-      <div class="light-row"><label for="light-decals-enabled">show decals</label><input id="light-decals-enabled" type="checkbox" /></div>
-      <div class="light-row"><label for="light-decals-opacity">decal opacity</label><input id="light-decals-opacity" type="number" step="0.01" /></div>
-      <div class="light-row"><label for="light-decals-force-opaque">force full opacity</label><input id="light-decals-force-opaque" type="checkbox" /></div>
-
-      <div class="light-subhead">Tone + Intensities</div>
-      <div class="light-row"><label for="light-exposure">exposure</label><input id="light-exposure" type="number" step="0.01" /></div>
-      <div class="light-row"><label for="light-hemi">hemi intensity</label><input id="light-hemi" type="number" step="0.05" /></div>
-      <div class="light-row"><label for="light-sun-intensity">sun intensity</label><input id="light-sun-intensity" type="number" step="0.05" /></div>
-      <div class="light-row"><label for="light-fill">fill intensity</label><input id="light-fill" type="number" step="0.05" /></div>
-      <div class="light-row"><label for="light-ambient">ambient intensity</label><input id="light-ambient" type="number" step="0.05" /></div>
-      <div class="light-row"><label for="light-flare-enabled">sun flare</label><input id="light-flare-enabled" type="checkbox" /></div>
-      <div class="light-row"><label for="light-flare-intensity">flare intensity</label><input id="light-flare-intensity" type="number" step="0.05" /></div>
-
-      <div class="light-subhead">Snow FX</div>
-      <div class="light-row"><label for="light-snow-enabled">enable snow</label><input id="light-snow-enabled" type="checkbox" /></div>
-      <div class="light-row"><label for="light-snow-intensity">intensity (particle x)</label><input id="light-snow-intensity" type="number" step="1" /></div>
-      <div class="light-row"><label for="light-snow-speed">fall speed</label><input id="light-snow-speed" type="number" step="1" /></div>
-      <div class="light-row"><label for="light-snow-gravity">gravity</label><input id="light-snow-gravity" type="number" step="0.1" /></div>
-      <div class="light-row"><label for="light-snow-size">flake size</label><input id="light-snow-size" type="number" step="0.1" /></div>
-      <div class="light-row"><label for="light-snow-wind">wind drift</label><input id="light-snow-wind" type="number" step="0.1" /></div>
-      <div class="light-row"><label for="light-snow-wind-dir">wind direction deg</label><input id="light-snow-wind-dir" type="number" step="1" /></div>
-      <div class="light-row"><label for="light-snow-drift-rand">drift randomness</label><input id="light-snow-drift-rand" type="number" step="0.01" /></div>
-      <div class="light-row"><label for="light-snow-size-var">size variation</label><input id="light-snow-size-var" type="number" step="0.01" /></div>
-      <div class="light-row"><label for="light-snow-haze-intensity">haze intensity</label><input id="light-snow-haze-intensity" type="number" step="0.01" /></div>
-      <div class="light-row"><label for="light-snow-haze-close">haze closeness</label><input id="light-snow-haze-close" type="number" step="0.01" /></div>
-
-      <div class="light-subhead">Sun Position</div>
-      <div class="light-row"><label for="light-sun-azimuth">sun azimuth deg</label><input id="light-sun-azimuth" type="number" step="1" /></div>
-      <div class="light-row"><label for="light-sun-elevation">sun elevation deg</label><input id="light-sun-elevation" type="number" step="1" /></div>
-      <div class="light-row"><label for="light-sun-distance">sun distance</label><input id="light-sun-distance" type="number" step="10" /></div>
-      <div class="light-row"><label for="light-target-x">target x</label><input id="light-target-x" type="number" step="10" /></div>
-      <div class="light-row"><label for="light-target-y">target y</label><input id="light-target-y" type="number" step="10" /></div>
-      <div class="light-row"><label for="light-target-z">target z</label><input id="light-target-z" type="number" step="10" /></div>
-
-      <div class="light-subhead">Shadows</div>
-      <div class="light-row"><label for="light-shadows-enabled">enable shadows</label><input id="light-shadows-enabled" type="checkbox" /></div>
-      <div class="light-row">
-        <label for="light-shadow-size">shadow map size</label>
-        <select id="light-shadow-size">
-          <option value="512">512</option>
-          <option value="1024">1024</option>
-          <option value="2048">2048</option>
-          <option value="4096">4096</option>
-        </select>
-      </div>
-      <div class="light-row"><label for="light-shadow-radius">shadow radius</label><input id="light-shadow-radius" type="number" step="10" /></div>
-      <div class="light-row"><label for="light-shadow-near">shadow near</label><input id="light-shadow-near" type="number" step="1" /></div>
-      <div class="light-row"><label for="light-shadow-far">shadow far</label><input id="light-shadow-far" type="number" step="10" /></div>
-      <div class="light-row"><label for="light-shadow-bias">shadow bias</label><input id="light-shadow-bias" type="number" step="0.00005" /></div>
-      <div class="light-row"><label for="light-shadow-normal-bias">shadow normalBias</label><input id="light-shadow-normal-bias" type="number" step="0.01" /></div>
-      <div class="light-row"><label for="light-show-helpers">show helpers</label><input id="light-show-helpers" type="checkbox" /></div>
-    </div>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>
