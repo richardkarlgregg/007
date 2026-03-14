@@ -277,18 +277,21 @@ export class BondIntroActor {
     // leaving translation untouched. This is a uniform geometry scale of 0.1.
     runtime.root.scale.multiplyScalar(0.10000001);
 
-    // Gun viewmodel: assign to layer 1 so the caller can render it in a
-    // separate pass after clearing depth, preventing level geometry from
-    // occluding the gun while still allowing correct self-sorting.
+    // Gun viewmodel: marked transparent with high renderOrder (10000) so
+    // Three.js sorts it into the transparent pass AFTER decals (renderOrder 0)
+    // but AFTER the depth-clear sentinel (renderOrder 9999).  This matches
+    // GoldenEye's draw order: opaque geo → decals (ZMODE_DEC) → Z-clear →
+    // hand weapon.  depthTest/depthWrite stay ON for correct self-sorting.
     runtime.root.traverse((node: THREE.Object3D) => {
-      node.layers.set(1);
       if (!(node instanceof THREE.Mesh)) return;
       node.frustumCulled = false;
+      node.renderOrder = 10000;
       const mats = Array.isArray(node.material) ? node.material : [node.material];
       for (const mat of mats) {
         mat.depthTest = true;
         mat.depthWrite = true;
-        mat.transparent = false;
+        mat.transparent = true;
+        mat.opacity = 1.0;
         mat.side = THREE.DoubleSide;
         mat.needsUpdate = true;
       }

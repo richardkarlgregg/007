@@ -350,6 +350,31 @@ async function bootstrap(): Promise<void> {
   fpGun.visible = false;
   camera.add(fpGun);
 
+  // GoldenEye clears the Z-buffer inline just before drawing the hand weapon,
+  // so level geometry never occludes the gun but lighting/fog still apply.
+  // Replicate this with a sentinel mesh at renderOrder 9999 whose
+  // onBeforeRender callback calls renderer.clearDepth(). Gun meshes render
+  // at renderOrder 10000 and are part of the same scene/lights.
+  // GoldenEye draws: opaque geo → secondary-DL decals (ZMODE_DEC, XLU) →
+  // clears Z-buffer → hand weapon.  We replicate this by marking the sentinel
+  // and gun as transparent so Three.js sorts them into the transparent pass
+  // AFTER the decals (which are also transparent at renderOrder 0).
+  // Sentinel (renderOrder 9999) fires clearDepth, then gun (10000) draws.
+  const sentinelGeo = new THREE.BufferGeometry();
+  sentinelGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 3));
+  const sentinelMat = new THREE.PointsMaterial({
+    size: 0,
+    colorWrite: false,
+    depthWrite: false,
+    depthTest: false,
+    transparent: true,
+  });
+  const depthClearSentinel = new THREE.Points(sentinelGeo, sentinelMat);
+  depthClearSentinel.frustumCulled = false;
+  depthClearSentinel.renderOrder = 9999;
+  depthClearSentinel.onBeforeRender = (renderer: THREE.WebGLRenderer) => { renderer.clearDepth(); };
+  camera.add(depthClearSentinel);
+
   scene.add(camera);
   let fpGunDetached = false;
 
@@ -2032,22 +2057,8 @@ async function bootstrap(): Promise<void> {
     }
     updateSunFlare();
 
-    // Two-pass render using layers: scene (layer 0) first, then clear depth
-    // and render FP gun (layer 1) on top so level geometry never occludes it.
-    renderer.autoClear = false;
-    renderer.clear(true, true, true);
-    camera.layers.set(0);
+    depthClearSentinel.visible = fpGun.visible;
     renderer.render(scene, camera);
-    if (fpGun.visible) {
-      renderer.clearDepth();
-      camera.layers.set(1);
-      const savedBg = scene.background;
-      scene.background = null;
-      renderer.render(scene, camera);
-      scene.background = savedBg;
-    }
-    camera.layers.enableAll();
-    renderer.autoClear = true;
 
     requestAnimationFrame(animate);
   };
